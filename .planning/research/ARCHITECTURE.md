@@ -1,584 +1,594 @@
 # Architecture Research
 
-**Domain:** Langium-based Language Server — BBjCPL integration, diagnostic hierarchy, outline resilience
-**Researched:** 2026-02-19
-**Confidence:** HIGH (based on direct source inspection of Langium 4.1.3 type definitions and existing codebase)
+**Domain:** Langium-based BBj Language Server — grammar additions, parser bug fixes, run command fixes, highlighting fixes, completion enhancements
+**Researched:** 2026-02-20
+**Confidence:** HIGH (direct codebase inspection, no speculative claims)
 
 ---
 
-## Standard Architecture
-
-### System Overview
+## System Overview
 
 ```
-+---------------------------------------------------------------------+
-|                    VS Code / IntelliJ (LSP Client)                   |
-+---------------------------------------------------------------------+
-|  didChange     textDocument    workspace/                            |
-|  didSave       /symbol         publishDiag                           |
-+--+-------------+---------------+---------+---------------------------+
-   |             |               |         |
-+--v-------------v---------------v---------v---------------------------+
-|                  Language Server (Node.js / stdio)                   |
-|                                                                      |
-|  +------------------------------------------------------------------+|
-|  |  BBjDocumentBuilder  (extends DefaultDocumentBuilder)            ||
-|  |                                                                  ||
-|  |  buildDocuments()                                                ||
-|  |    -> parse -> index -> computeScopes -> link -> indexRefs       ||
-|  |    -> validate (BBjDocumentValidator)                            ||
-|  |    -> addImportedBBjDocuments()       [existing]                 ||
-|  |    -> revalidateUseFilePathDiags()    [existing]                 ||
-|  |    -> [NEW] invokeBBjCPLAndMerge()                               ||
-|  |    -> notifyDocumentPhase(Validated)  <- Langium publishes       ||
-|  |                                                                  ||
-|  +------------------------------------------------------------------+|
-|                                                                      |
-|  +--------------------+  +--------------------+  +-----------------+ |
-|  |BBjDocumentValidator|  |[NEW] BBjCPL         |  |[NEW] BBjDocument| |
-|  |(extends Default    |  |CompilerService      |  |SymbolProvider   | |
-|  |DocumentValidator)  |  |                     |  |(extends Default)| |
-|  |                    |  | invokeCPL()         |  |                 | |
-|  |applyHierarchyFilter|  | parseCPLOutput()    |  |getSymbols()     | |
-|  |() in validateDoc() |  | mapToLSP()          |  | with parse-error| |
-|  +--------------------+  +--------------------+  | resilience      | |
-|                                                  +-----------------+ |
-|                                                                      |
-|  +------------------------------------------------------------------+|
-|  |  BBjWorkspaceManager  (settings: bbjHome, trigger config)        ||
-|  +------------------------------------------------------------------+|
-|  +------------------------------------------------------------------+|
-|  |  BBjModule DI  -- registers all services                         ||
-|  +------------------------------------------------------------------+|
-+----------------------------------------------------------------------+
-                         |
-                         v
-+----------------------------------------------------------------------+
-|                  BBjCPL  (external subprocess)                        |
-|    bbjcpl -N [options] filename.bbj  ->  stderr: line diagnostics    |
-+----------------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────────────┐
+│                          IDE Layer                                   │
+│  ┌──────────────────────┐         ┌────────────────────────────┐    │
+│  │   bbj-vscode/        │         │   bbj-intellij/            │    │
+│  │   extension.ts       │         │   BbjRunActionBase.java    │    │
+│  │   Commands.cjs       │         │   (BUI/DWC/GUI actions)    │    │
+│  │   (BUI/DWC/GUI run)  │         │   LSP4IJ bridge            │    │
+│  └──────────┬───────────┘         └─────────────┬──────────────┘    │
+│             │ stdio / LSP                        │ stdio / LSP       │
+└─────────────┼──────────────────────────────────-┼───────────────────┘
+              │                                    │ (same binary)
+┌─────────────▼────────────────────────────────────▼──────────────────┐
+│                    Language Server (Node.js)                         │
+│                                                                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │ bbj-module  │  │ bbj-lexer   │  │ bbj-token-  │                 │
+│  │ (DI wiring) │  │ (line-cont) │  │ builder     │                 │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                 │
+│         │                │                │                         │
+│  ┌──────▼──────────────────────────────────▼──────────────────┐    │
+│  │                    Langium Core Pipeline                     │    │
+│  │  Grammar (bbj.langium) -> Parser -> AST                     │    │
+│  └──────────────────────────────┬───────────────────────────────┘   │
+│                                 │ AST                               │
+│  ┌────────────────┐  ┌──────────▼──────────┐  ┌─────────────────┐  │
+│  │ bbj-scope      │  │ bbj-scope-local     │  │ bbj-linker      │  │
+│  │ (global scope/ │  │ (LocalSymbols /     │  │ (cross-ref      │  │
+│  │  member scope) │  │  export symbols)    │  │  resolution)    │  │
+│  └────────┬───────┘  └─────────────────────┘  └────────┬────────┘  │
+│           │                                             │            │
+│  ┌────────▼───────────────────────────────────────────-▼──────┐    │
+│  │ bbj-type-inferer    bbj-validator    bbj-completion-provider │    │
+│  │ (Expression->Class) (semantic rules) (LSP completion items) │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────┐  │
+│  │ bbj-document-       │  │ bbj-ws-manager                      │  │
+│  │ builder (BBjCPL     │  │ (workspace init, settings,          │  │
+│  │  integration)       │  │  classpath, java-interop config)    │  │
+│  └─────────────────────┘  └─────────────────────────────────────┘  │
+└────────────────────────────────────────┬────────────────────────────┘
+                                         │ JSON-RPC / TCP socket
+┌────────────────────────────────────────▼────────────────────────────┐
+│                   java-interop (Java process)                        │
+│   InteropService: getClassInfo, getClassInfos, loadClasspath,        │
+│   getTopLevelPackages -> JavaClass/JavaMethod/JavaField metadata     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Component Responsibilities
 
-| Component | Responsibility | Status |
-|-----------|----------------|--------|
-| `BBjDocumentBuilder` | Document lifecycle orchestration, transitive USE import resolution | Existing - extend |
-| `BBjDocumentValidator` | Langium diagnostics: linking errors, semantic checks, hierarchy filtering | Existing - extend |
-| `BBjCPLCompilerService` | Subprocess invocation, output parsing, LSP diagnostic mapping | New |
-| `BBjDocumentSymbolProvider` | Outline with parse-error resilience | New |
-| `BBjWorkspaceManager` | BBj home path, settings, trigger config | Existing - no changes needed |
+| Component | Responsibility | Key File |
+|-----------|----------------|----------|
+| `bbj.langium` | Grammar defining all BBj syntax: statements, expressions, class/method decls, terminals | `bbj-vscode/src/language/bbj.langium` |
+| `java-types.langium` | Type hierarchy for Java interop: JavaClass, JavaMethod, JavaField, DocumentationInfo | `bbj-vscode/src/language/java-types.langium` |
+| `BbjLexer` | Pre-processing: collapses `:` line-continuation before tokenization | `bbj-lexer.ts` |
+| `BBjTokenBuilder` | Chevrotain token assembly: splices synthetic tokens (RELEASE_NL, RPAREN_NL, etc.), adds LONGER_ALT `[idWithSuffix, id]` on all uppercase keywords to prevent camel-case identifier breakage | `bbj-token-builder.ts` |
+| `BbjScopeComputation` | Per-document local symbols: variables, fields, DEF FN params, class members, accessor descriptors, USE-resolved Java classes | `bbj-scope-local.ts` |
+| `BbjScopeProvider` | Global + member scope: resolves MemberCall receiver type, Java package children, BBj class inheritance chain, named parameter scope | `bbj-scope.ts` |
+| `BBjTypeInferer` | Expression to Class mapping: SymbolRef, ConstructorCall, MemberCall, CastExpression, StringLiteral to JavaClass | `bbj-type-inferer.ts` |
+| `BBjValidator` | Semantic validation checks registered per AST node type | `bbj-validator.ts` + `validations/` |
+| `BBjDocumentValidator` | Diagnostic hierarchy: BBjCPL > Parse > Semantic > Warning; cascading suppression and maxErrors cap | `bbj-document-validator.ts` |
+| `BBjCompletionProvider` | LSP completion: `#` trigger for class fields, Java method snippets with Javadoc, symbolic labels, keywords | `bbj-completion-provider.ts` |
+| `JavaInteropService` | Java class metadata: async resolution with mutex, depth limit, timeout, package hierarchy, Javadoc enrichment | `java-interop.ts` |
+| `BBjWorkspaceManager` | Workspace init: settings parsing (home, classpath, interopHost, interopPort, configPath, diagnostic settings), library loading, BBjAPI synthetic doc | `bbj-ws-manager.ts` |
+| `BBjDocumentBuilder` | Extends Langium build pipeline: BBjCPL compiler integration with 500ms debounce | `bbj-document-builder.ts` |
+| `bbj-module.ts` | Langium DI wiring: BBjModule + BBjSharedModule, `createBBjServices()` | `bbj-module.ts` |
+| TextMate grammars | Syntax highlighting: `bbj.tmLanguage.json` (BBj source), `bbx.tmLanguage.json` (BBx config files) | `syntaxes/` |
+| `Commands.cjs` | VS Code run commands: `runWeb()` for BUI/DWC, `run()` for GUI — calls `web.bbj` with EM token and configPath | `src/Commands/Commands.cjs` |
+| `web.bbj` | BBj runner: reads ARGV params (client, name, programme, wd, user, pass, classpath, token, configPath), registers app in EM, launches URL | `tools/web.bbj` |
+| `BbjRunActionBase.java` | IntelliJ run actions: shared auto-save, validation, process management, stderr logging, `getConfigPath()`/`getConfigPathArg()` | `bbj-intellij/.../actions/BbjRunActionBase.java` |
 
 ---
 
-## Question-by-Question Architecture Answers
+## Integration Points for v3.9 Features
 
-### Q1: Where Does BBjCPL Invocation Fit in the Langium Document Lifecycle?
+### A. Grammar Verb Additions (EXIT int, SERIAL, ADDR)
 
-**Answer: After `DocumentState.Validated`, inside the existing `buildDocuments()` override.**
+**Files touched:** `bbj.langium`, `generated/ast.ts` (auto-generated)
 
-Langium's document lifecycle (confirmed from `documents.d.ts`):
-
+**Existing pattern for EXIT verb:**
 ```
-Changed(0) -> Parsed(1) -> IndexedContent(2) -> ComputedScopes(3)
-           -> Linked(4) -> IndexedReferences(5) -> Validated(6)
+ExitWithNumberStatement:
+    kind='EXIT' | RELEASE_NL | RELEASE_NO_NL exitVal=Expression
+;
 ```
+Currently `EXIT` alone has no optional integer parameter. Adding `EXIT int` means making `exitVal` optional when `EXIT` is the keyword (as opposed to RELEASE). The grammar rule needs an optional expression after `kind='EXIT'`.
 
-After `Validated`, Langium's internal `addDiagnosticsHandler` calls `connection.sendDiagnostics()` via its own `onDocumentPhase(DocumentState.Validated, ...)` listener. To merge BBjCPL output into that single send, BBjCPL must run before `notifyDocumentPhase` is called.
+**Integration:**
+- Grammar change only — no validator, scope, or completion changes needed
+- `generated/ast.ts` and `generated/grammar.ts` are auto-regenerated by `langium generate`
+- Test: add parser test in `bbj-vscode/test/parser.test.ts`
 
-**The integration point:**
+**SERIAL verb:** New `SingleStatement` alternative. Add a `SerialStatement` rule body and reference it in `SingleStatement`.
 
-BBjCPL invocation belongs **inside** the existing `BBjDocumentBuilder.buildDocuments()` override, appended after `super.buildDocuments()` completes. This is exactly the same pattern already used by `addImportedBBjDocuments()` and `revalidateUseFilePathDiagnostics()`.
+**ADDR function:** Exists as `AddrStatement` (`'ADDR' fileid=StringLiteral Err?`). Verify whether the issue is the rule's parameter type (StringLiteral vs. Expression) or a tokenizer conflict with ADDR appearing in other positions.
 
+### B. Parser Bug: `releaseVersion!` Flagged as Error (#379)
+
+**Root cause (HIGH confidence, verified by direct inspection):**
+
+In `bbj-token-builder.ts`:
 ```typescript
-// In BBjDocumentBuilder.buildDocuments():
-protected override async buildDocuments(
-    documents: LangiumDocument[], options: BuildOptions, cancelToken: CancellationToken
-): Promise<void> {
-    await super.buildDocuments(documents, options, cancelToken);
-    if (!this.isImportingBBjDocuments) {
-        await this.addImportedBBjDocuments(documents, options, cancelToken);
-        await this.revalidateUseFilePathDiagnostics(documents, cancelToken);
-        // NEW: invoke BBjCPL and merge diagnostics for qualifying documents
-        await this.invokeBBjCPLAndMerge(documents, cancelToken);
+releaseNl.LONGER_ALT = id;          // only id, NOT [idWithSuffix, id]
+releaseNoNl.LONGER_ALT = id;
+```
+
+All other uppercase keyword tokens processed in the loop get:
+```typescript
+keywordToken.LONGER_ALT = [idWithSuffix, id];
+```
+
+When Chevrotain sees `releaseVersion!`, the RELEASE_NO_NL token matches "RELEASE" via its regex, then checks LONGER_ALT for a longer match. LONGER_ALT only includes `id` (matches `releaseVersion` without the `!`), not `idWithSuffix` (which would match `releaseVersion!`). So the tokenizer uses the ID token for `releaseVersion` and leaves `!` as an orphaned prefix operator, causing a parse error.
+
+**Fix (2 lines in `bbj-token-builder.ts`):**
+```typescript
+releaseNl.LONGER_ALT = [idWithSuffix, id];
+releaseNoNl.LONGER_ALT = [idWithSuffix, id];
+```
+
+**Files touched:** `bbj-token-builder.ts` only.
+
+### C. Parser Bug: DECLARE Outside Methods in Class (#380)
+
+**Root cause:** The grammar `ClassDecl` only allows `ClassMember` (FieldDecl | MethodDecl) or `Comments` between `CLASS` and `CLASSEND`. A `declare` statement at class level (not inside a method) does not match any of these alternatives, causing a parse error.
+
+```
+ClassDecl returns BbjClass:
+    'CLASS' Visibility Static name=ValidName ...
+    (members+=ClassMember | Comments)*
+    'CLASSEND'
+;
+ClassMember returns ClassMember:
+    FieldDecl | MethodDecl      // VariableDecl is not here
+;
+```
+
+**Fix:** Add a grammar alternative in `ClassDecl` to accept (and silently discard) a `VariableDecl` at class scope, since BBj runtime ignores class-level DECLARE statements.
+
+```
+// Option: extend ClassMember to include VariableDecl at class scope
+ClassMember returns ClassMember:
+    FieldDecl | MethodDecl | ClassLevelDeclare
+;
+ClassLevelDeclare:
+    {infer ClassLevelDeclare} 'declare' auto?='auto'? type=QualifiedClass (array?='[' ']')? name=FeatureName
+;
+```
+
+Or, simpler: make `VariableDecl` a valid `ClassMember` alternative and don't export it to the class member scope.
+
+**Files touched:** `bbj.langium` (grammar alternative in `ClassDecl`).
+
+### D. Run Command Bug: EM Config "--" Causing DWC/BUI Failure (#382)
+
+**Root cause (verified by inspecting `web.bbj`):**
+
+In `tools/web.bbj` line 69:
+```bbj
+if sscp! <> null() and sscp! > "" and sscp! <> "--" then
+    app!.setString(app!.CLASSPATH, sscp!)
+fi
+```
+
+The classpath parameter is guarded against `"--"`. But `configFile!` (ARGV(9)) has no equivalent guard. If the EM configuration passes `"--"` as the configPath (e.g. because the configPath setting is not set but the parameter position is used as an EM config separator), it gets passed to `app!.setString(app!.CONFIG_FILE, "--")`, which causes the EM to use `"--"` as a literal config file path and fail to launch DWC/BUI.
+
+**Fix:** Add the same `"--"` guard for `configFile!` in `web.bbj`:
+```bbj
+if (configFile! <> null() and configFile! > "" and configFile! <> "--") then
+    app!.setString(app!.CONFIG_FILE, configFile!)
+else
+    app!.setString(app!.CONFIG_FILE, BBjAPI().getConfig().getConfigFileName())
+fi
+```
+
+**Files touched:** `tools/web.bbj` (primary fix). No IntelliJ change needed if the web.bbj guard is sufficient.
+
+### E. Highlighting Bug: config.bbx No Longer Highlighted (#381)
+
+**Root cause (verified by inspecting `package.json`):**
+
+`package.json` registers one grammar entry:
+```json
+"grammars": [
+  {
+    "language": "bbj",
+    "scopeName": "source.bbj",
+    "path": "./syntaxes/bbj.tmLanguage.json"
+  }
+]
+```
+
+The `bbx.tmLanguage.json` file exists in `syntaxes/` with `scopeName: "source.bbx"` but is NOT registered. The `bbj` language id covers `.bbx` extension (file type registration), but uses only `bbj.tmLanguage.json` for highlighting. Since `config.bbx` is a BBx-format configuration file (not BBj source), it should use `bbx.tmLanguage.json` grammar.
+
+**Fix:** Add a second grammar entry in `package.json`:
+```json
+{
+  "language": "bbj",
+  "scopeName": "source.bbx",
+  "path": "./syntaxes/bbx.tmLanguage.json"
+}
+```
+
+Or, if `.bbx` files need to use the BBx grammar instead of the BBj grammar: use a filename-pattern override. The simplest fix for `config.bbx` specifically is to associate `.bbx` files with the `bbx` language id and register `bbx.tmLanguage.json` for it. But since `.bbx` files are currently treated as BBj source (they run as BBj programs), the best approach is to register `bbx.tmLanguage.json` as an embedded grammar for the `bbj` scope.
+
+**Files touched:** `bbj-vscode/package.json`.
+
+### F. Static Method Completion on Class References via USE (#374)
+
+**Current behavior analysis (HIGH confidence):**
+
+`BbjScopeProvider.getScope()` for `'member'` property:
+```typescript
+if (context.property === 'member' && isMemberCall(context.container)) {
+    const receiverType = this.typeInferer.getType(receiver);
+    if (isBbjClass(receiverType)) {
+        return new StreamScopeWithPredicate(
+            this.createBBjClassMemberScope(receiverType).getAllElements(),
+            super.getScope(context)
+        );
     }
 }
 ```
 
-`invokeBBjCPLAndMerge` mutates `document.diagnostics` in place, then calls `notifyDocumentPhase(document, DocumentState.Validated, cancelToken)` to push the merged result. The Langium `addDiagnosticsHandler` listener fires on this notification and sends the updated array to the client.
+When user writes `MyClass.someMethod()`, `typeInferer.getType(SymbolRef { symbol -> BbjClass })` returns the `BbjClass` node (via `isClass(reference)` branch in type inferer). The scope includes ALL members — both static and instance. The gap: instance members should NOT be offered when completing on a class reference.
 
-**Why NOT parallel:** BBjCPL should run sequentially after Langium validation. Diagnostic merging is simpler when both result sets exist before the final send. Parallel invocation could race with Langium's own `onDocumentPhase` emission.
-
-**Why NOT a separate `onBuildPhase` listener in main.ts:** Putting it inside `buildDocuments()` keeps all post-validation side effects in one place (consistent with `revalidateUseFilePathDiagnostics`). It also ensures the build cancel token propagates to BBjCPL invocations, so rapid edits properly cancel pending CPL runs.
-
----
-
-### Q2: How Should Diagnostics Be Merged/Reconciled?
-
-**Answer: Mutate `document.diagnostics` in place before calling `notifyDocumentPhase`.**
-
-The `document.diagnostics` field (type `Diagnostic[] | undefined`) is populated by `DefaultDocumentBuilder.validate()`. After `super.buildDocuments()` returns, this array contains all Langium diagnostics. To merge BBjCPL output:
-
+**Fix:** Detect whether the receiver resolves to a class reference (not an instance) and return only static members:
 ```typescript
-private async invokeBBjCPLAndMerge(
-    documents: LangiumDocument[], cancelToken: CancellationToken
-): Promise<void> {
-    for (const doc of documents) {
-        if (!this.shouldValidate(doc)) continue;  // skips bbjlib, external, etc.
-        if (!this.shouldRunCPL(doc)) continue;    // trigger mode check
-
-        const cplDiags = await this.cplService.compile(doc.uri, cancelToken);
-        // Append CPL diagnostics; document.diagnostics already contains Langium's
-        doc.diagnostics = [...(doc.diagnostics ?? []), ...cplDiags];
-        // Re-emit so the client sees the merged set
-        await this.notifyDocumentPhase(doc, DocumentState.Validated, cancelToken);
+if (isBbjClass(receiverType)) {
+    // receiverType is the class itself (from SymbolRef resolving to BbjClass)
+    // Check if receiver is a direct class reference (not an object instance)
+    const isClassRef = isSymbolRef(receiver) && isClass(receiver.symbol.ref);
+    if (isClassRef) {
+        // Return only static members for class-reference access
+        return this.createBBjClassStaticMemberScope(receiverType);
     }
-}
-```
-
-**Deduplication strategy:** CPL and Langium may report similar errors (e.g., a syntax error detected by both). Use source tagging: Langium diagnostics carry `source: 'bbj'` (from `getSource()` in `DefaultDocumentValidator`). Tag CPL diagnostics `source: 'BBjCPL'`. No deduplication by default - if both report the same issue, both appear. This is honest behavior and lets users understand which tool caught what.
-
-**Severity mapping from BBjCPL:** All stderr output maps to `DiagnosticSeverity.Error` unless the `-W` flag is used and BBjCPL distinguishes warnings in its output format (needs empirical verification).
-
----
-
-### Q3: Where Does Diagnostic Hierarchy Filtering Happen?
-
-**Answer: In `BBjDocumentValidator`, extending `validateDocument()` to filter after `super.validateDocument()`.**
-
-The existing `BBjDocumentValidator.toDiagnostic()` already performs severity overrides (linking errors downgraded from Error to Warning). The hierarchy filtering extends the same class:
-
-```typescript
-// In BBjDocumentValidator (extends DefaultDocumentValidator):
-override async validateDocument(
-    document: LangiumDocument,
-    options?: ValidationOptions,
-    cancelToken?: CancellationToken
-): Promise<Diagnostic[]> {
-    const all = await super.validateDocument(document, options, cancelToken);
-    return this.applyHierarchyFilter(all);
-}
-
-private applyHierarchyFilter(diags: Diagnostic[]): Diagnostic[] {
-    const hasParseErrors = diags.some(
-        d => (d.data as DiagnosticData)?.code === DocumentValidator.ParsingError
+    return new StreamScopeWithPredicate(
+        this.createBBjClassMemberScope(receiverType).getAllElements(),
+        super.getScope(context)
     );
-    if (hasParseErrors) {
-        // Suppress downstream noise when the document doesn't parse
-        return diags.filter(d => {
-            const code = (d.data as DiagnosticData)?.code;
-            return code === DocumentValidator.LexingError
-                || code === DocumentValidator.ParsingError;
-        });
-    }
-    return diags;
 }
 ```
 
-**Hierarchy rationale:** Parse errors make linking and semantic errors unreliable. Showing 40 cascade diagnostics from a single unclosed brace is noise. The filter suppresses linking and semantic diagnostics when parse errors are present - the user should fix parsing first.
+Add `createBBjClassStaticMemberScope()` that filters to `member.static === true`.
 
-**Alternative placement considered:** Filtering in `BBjDocumentBuilder` after `validate()` was rejected because `BBjDocumentValidator.validateDocument()` returns a fresh array - the builder stores it in `document.diagnostics`. Filtering in the validator ensures the stored array is clean from the start, and the logic stays encapsulated with the rest of the diagnostic transformation.
+**Files touched:** `bbj-scope.ts` (scope provider), possibly `bbj-completion-provider.ts` (for consistent completion item kind).
 
----
+### G. `.class` Property Resolution (#373)
 
-### Q4: How to Override Langium's DefaultDocumentSymbolProvider for Outline Resilience?
+**Current behavior:** `MyClass.class` parses as a `MemberCall` with `member` referencing the name `class`. However, `class` is a BBj keyword — it tokenizes as the `CLASS` keyword token, not as an `ID` or `FeatureName`. The `MemberCall` grammar:
+```
+MemberCall: PrimaryExpression (... '.' member=[NamedElement:FeatureName] ...)
+```
+`FeatureName` returns ID | ID_WITH_SUFFIX. The keyword `CLASS` has `CATEGORIES = [id]` (from token builder), so it can tokenize as ID via category. But whether it satisfies `FeatureName` after `.` is ambiguous.
 
-**Answer: New service `BBjDocumentSymbolProvider`, registered in `BBjModule.lsp.DocumentSymbolProvider`.**
-
-The `DefaultDocumentSymbolProvider` (confirmed from `document-symbol-provider.d.ts`) traverses the AST via `getSymbols()` -> `getSymbol()` -> `getChildSymbols()`. When there are parse errors, the AST is partial - some nodes are missing or malformed - which can cause an empty or broken outline.
-
-**Langium registers the document symbol handler at `DocumentState.Parsed`** (confirmed from `addDocumentSymbolHandler` using `requiredState = DocumentState.Parsed`), so the AST is always at least partially available. The resilience layer adds null-safety when traversing that partial AST.
+**Fix approach:** In `BBjTypeInferer.getTypeInternal()`, handle the `MemberCall` pattern where `member.$refText === 'class'` as a special case returning `java.lang.Class`. No grammar change needed if the tokenizer already allows `CLASS` as an ID — just add a type inferer branch:
 
 ```typescript
-// bbj-document-symbol-provider.ts
-export class BBjDocumentSymbolProvider extends DefaultDocumentSymbolProvider {
-    override getSymbols(
-        document: LangiumDocument,
-        params: DocumentSymbolParams,
-        cancelToken?: CancellationToken
-    ): MaybePromise<DocumentSymbol[]> {
-        try {
-            return super.getSymbols(document, params, cancelToken);
-        } catch {
-            // Parse error fallback: extract symbols from partial AST via safe traversal
-            return this.getSymbolsFromPartialAst(document);
-        }
+} else if (isMemberCall(expression)) {
+    const memberRef = expression.member.$refText;
+    if (memberRef === 'class' || memberRef === 'CLASS') {
+        // Java .class idiom — return java.lang.Class
+        return this.javaInterop.getResolvedClass('java.lang.Class');
     }
-
-    private getSymbolsFromPartialAst(document: LangiumDocument): DocumentSymbol[] {
-        // Walk document.parseResult.value with null-checks on every node
-        // Collect: BbjClass nodes, MethodDecl, FieldDecl, LabelDecl, DefFunction
-        // Return whatever is recoverable - better than nothing
-        const symbols: DocumentSymbol[] = [];
-        try {
-            AstUtils.streamAllContents(document.parseResult.value).forEach(node => {
-                try {
-                    const syms = this.getSymbol(document, node);
-                    symbols.push(...syms);
-                } catch { /* skip broken nodes */ }
-            });
-        } catch { /* AST too broken to walk */ }
-        return symbols;
-    }
+    // ... existing logic
 }
 ```
 
-**Registration in BBjModule:**
+**Files touched:** `bbj-type-inferer.ts` (primary), `bbj-scope.ts` if `.class` needs to resolve in scope.
 
+### H. Constructor Completion for `new ClassName()`
+
+**Current behavior:** When a user types `new MyClass(`, the cursor is inside the `ConstructorCall.args` list. Langium's default completion provider does not know about constructor signatures — it falls back to generic scope completion.
+
+**Fix:** Add a `ConstructorCall` detection in `BBjCompletionProvider.getCompletion()`. When the cursor is in a `ConstructorCall` context, look up the class's constructors (for Java classes: methods named the same as the simple class name; for BBj classes: `MethodDecl` nodes whose name matches the class name) and offer them as completion items with parameter snippet syntax.
+
+**Files touched:** `bbj-completion-provider.ts` — add constructor completion interceptor.
+
+### I. Deprecated Method Visual Indicator in Completion
+
+**Current state (verified):**
+- `MethodInfo.java` has no `deprecated` field
+- `InteropService.java` does not inspect `@Deprecated` annotation
+- `java-types.langium` `JavaMethod` interface has no `deprecated` property
+- `BBjCompletionProvider` does not set `CompletionItemTag.Deprecated`
+
+**Fix requires changes across the full stack:**
+
+1. `MethodInfo.java`: add `public boolean deprecated;`
+2. `InteropService.java` in `loadClassInfo()`: add `mi.deprecated = m.isAnnotationPresent(Deprecated.class);`
+3. `java-types.langium`: add `deprecated?: boolean` to `JavaMethod` interface
+4. `java-interop.ts` in `resolveClass()`: propagate `(method as Mutable<JavaMethod>).deprecated = method.deprecated`
+5. `bbj-completion-provider.ts` in `createReferenceCompletionItem()`:
 ```typescript
-// bbj-module.ts - in BBjModule lsp section:
-lsp: {
-    // ... existing providers ...
-    DocumentSymbolProvider: (services) => new BBjDocumentSymbolProvider(services),  // NEW
+if (nodeDescription.node && 'deprecated' in nodeDescription.node && nodeDescription.node.deprecated) {
+    superImpl.tags = [CompletionItemTag.Deprecated];
 }
 ```
 
+**Files touched:** `MethodInfo.java`, `InteropService.java`, `java-types.langium`, `java-interop.ts`, `bbj-completion-provider.ts`.
+
 ---
 
-### Q5: Data Flow - "File Changed" to "Diagnostics Published"
-
-**Complete flow after integration:**
+## Recommended Project Structure (existing, unchanged)
 
 ```
-1. User saves/edits BBj file
-   |
-2. DocumentUpdateHandler.didChangeContent() / didSaveDocument()
-   |
-3. DocumentBuilder.update([changedUri], [])
-   |
-4. BBjDocumentBuilder.buildDocuments(documents, options, cancelToken)
-   |
-   +-- 4a. super.buildDocuments()
-   |       +-- parse (Chevrotain)
-   |       +-- index content
-   |       +-- compute scopes
-   |       +-- link (BbjLinker)
-   |       +-- index references
-   |       +-- validate (BBjDocumentValidator)
-   |               +-- lexing errors
-   |               +-- parsing errors
-   |               +-- linking errors (severity-overridden)
-   |               +-- AST validation checks
-   |               +-- applyHierarchyFilter()  [NEW]
-   |
-   +-- 4b. addImportedBBjDocuments()  [existing]
-   |
-   +-- 4c. revalidateUseFilePathDiagnostics()  [existing]
-   |
-   +-- 4d. [NEW] invokeBBjCPLAndMerge()
-           +-- shouldRunCPL(doc)?  -> check trigger mode & bbj.home
-           +-- BBjCPLCompilerService.compile(doc.uri, cancelToken)
-           |       +-- spawn bbjcpl -N [options] filename.bbj
-           |       +-- collect stderr
-           |       +-- parseCPLOutput() -> Diagnostic[]
-           +-- merge into document.diagnostics
-           +-- notifyDocumentPhase(doc, Validated, cancelToken)
-                   |
-5. addDiagnosticsHandler listener fires (Langium internal, language-server.js line 278)
-   |
-6. connection.sendDiagnostics({ uri, diagnostics: merged })
-   |
-7. Client (VS Code / IntelliJ LSP4IJ) shows squiggles
+bbj-vscode/src/language/
+├── bbj.langium                   # Grammar (verbs, terminals, types)
+├── java-types.langium            # Java interop type declarations
+├── bbj-token-builder.ts          # Chevrotain token assembly + LONGER_ALT
+├── bbj-lexer.ts                  # Line-continuation pre-processing
+├── bbj-module.ts                 # DI wiring
+├── bbj-scope.ts                  # Global + member scope resolution
+├── bbj-scope-local.ts            # Local symbols computation
+├── bbj-type-inferer.ts           # Expression -> Class inference
+├── bbj-validator.ts              # Semantic validation
+├── bbj-document-validator.ts     # Diagnostic hierarchy/suppression
+├── bbj-completion-provider.ts    # LSP completion items
+├── java-interop.ts               # Java backend service client
+├── bbj-ws-manager.ts             # Workspace + settings lifecycle
+└── validations/
+    ├── check-classes.ts
+    ├── check-variable-scoping.ts
+    └── line-break-validation.ts
+bbj-vscode/tools/
+├── web.bbj                       # BUI/DWC launcher (fix "--" guard here)
+├── em-login.bbj
+└── em-validate-token.bbj
+bbj-vscode/syntaxes/
+├── bbj.tmLanguage.json           # TextMate grammar for BBj source
+└── bbx.tmLanguage.json           # TextMate grammar for BBx config files (register in package.json)
+java-interop/src/main/java/bbj/interop/
+├── InteropService.java           # Add deprecated annotation inspection
+└── data/
+    └── MethodInfo.java           # Add deprecated field
 ```
 
 ---
 
-### Q6: Configurable Trigger (On-Save vs Debounced)
+## Architectural Patterns
 
-**Answer: The trigger decision lives in a guard method in `BBjDocumentBuilder`, checking settings at invocation time. On-save tracking requires a `BBjDocumentUpdateHandler` override.**
+### Pattern 1: Grammar-First Feature Addition (Verbs)
 
-Langium's `DocumentUpdateHandler` has `didSaveDocument?` and `didChangeContent?` hooks (confirmed from `document-update-handler.d.ts`). For on-save mode, track the last-saved URIs in a Set populated by a custom handler:
+**What:** New BBj verbs are added by writing the grammar rule, adding it to `SingleStatement` alternatives, running `langium generate`, then adding a test.
 
+**When to use:** EXIT int, SERIAL, ADDR.
+
+**Trade-offs:** Grammar changes regenerate `generated/ast.ts` and `generated/grammar.ts`. The grammar is the single source of truth — no additional service wiring is needed unless the new construct requires validation or completion enhancements.
+
+**Example (EXIT with optional int):**
+```
+ExitWithNumberStatement:
+    (kind='EXIT' exitVal=Expression?)
+    | RELEASE_NL
+    | RELEASE_NO_NL exitVal=Expression
+;
+```
+
+### Pattern 2: Token Builder LONGER_ALT Fix (Lexer Bugs)
+
+**What:** BBj keywords that tokenize before identifiers cause problems when the keyword text appears as a prefix of a valid identifier. The fix ensures `LONGER_ALT = [idWithSuffix, id]` for all such tokens.
+
+**When to use:** `#379` (`releaseVersion!` bug). Pattern established in v3.4 for `step` prefix fix.
+
+**Example:**
 ```typescript
-// bbj-document-update-handler.ts
-export class BBjDocumentUpdateHandler extends DefaultDocumentUpdateHandler {
-    private readonly savedUris = new Set<string>();
-
-    override didSaveDocument(event: TextDocumentChangeEvent<TextDocument>): void {
-        this.savedUris.add(event.document.uri);
-        super.didSaveDocument(event);
-    }
-
-    wasRecentlySaved(uri: URI): boolean {
-        const key = uri.toString();
-        const result = this.savedUris.has(key);
-        this.savedUris.delete(key);  // consume - one-shot check
-        return result;
-    }
-}
+// Current (broken for suffixed identifiers):
+releaseNl.LONGER_ALT = id;
+// Fixed:
+releaseNl.LONGER_ALT = [idWithSuffix, id];
 ```
 
-**Trigger guard in BBjDocumentBuilder:**
+### Pattern 3: Scope Provider Receiver-Type Dispatch (Completion Enhancements)
 
-```typescript
-private shouldRunCPL(document: LangiumDocument): boolean {
-    const bbjHome = (this.wsManager() as BBjWorkspaceManager).getBBjDir();
-    if (!bbjHome) return false;  // no compiler available
+**What:** When resolving member access scope, `BbjScopeProvider.getScope()` dispatches on receiver type. Adding static-only completion means detecting when the receiver is a class reference (not an instance) and filtering to static members only.
 
-    const trigger = this.getCPLTrigger(); // 'onChange' | 'onSave' | 'off'
-    if (trigger === 'off') return false;
-    if (trigger === 'onSave') {
-        return this.updateHandler?.wasRecentlySaved(document.uri) ?? false;
-    }
-    return true; // 'onChange': always run (debounced by Langium's own update queue)
-}
+**When to use:** `#374` (static method completion).
+
+**Trade-offs:** The type inferer already returns the `Class` node for a bare `SymbolRef` referencing a class (via `isClass(reference)` branch). The receiver classification check is: `isSymbolRef(receiver) && isClass(receiver.symbol.ref)`.
+
+### Pattern 4: Completion Provider Javadoc + Tag Enrichment
+
+**What:** `BBjCompletionProvider.createReferenceCompletionItem()` reads node metadata set by `java-interop.ts` during `resolveClass()`. Adding deprecated indicators follows the same read-from-node pattern used for `docu` (Javadoc).
+
+**When to use:** Deprecated method indicator.
+
+**Trade-offs:** Deprecated flag must flow through java-interop boundary: `MethodInfo.java` -> `JavaMethod` interface -> `resolveClass()` -> completion item. Requires a Java build.
+
+### Pattern 5: TextMate Grammar Registration (Highlighting Fix)
+
+**What:** VS Code TextMate grammars are registered in `package.json` under `"grammars"`. A grammar file with a distinct scopeName can be added alongside the existing BBj grammar.
+
+**When to use:** `#381` (config.bbx highlighting).
+
+**Trade-offs:** Registering `bbx.tmLanguage.json` for the `bbj` language id may affect ALL `.bbx` files, not just `config.bbx`. If `.bbx` files are BBj source programs (they are), they should use `bbj.tmLanguage.json`, not `bbx.tmLanguage.json`. The approach needs careful scoping — possibly a filename-based association rather than extension-based.
+
+---
+
+## Data Flow
+
+### Grammar Verb Addition Flow
+
+```
+bbj.langium (new rule added to grammar)
+    |
+    v (langium generate)
+generated/ast.ts + generated/grammar.ts
+    |
+    v (TypeScript compilation + Chevrotain)
+Parser recognizes new construct
+    |
+    v (parse)
+New AST node type available in validators and services
 ```
 
-**On-change debouncing:** Langium handles keystroke debouncing via `WorkspaceLock` internally - rapid edits cancel and restart the build. BBjCPL automatically benefits because it runs inside `buildDocuments()`, which is guarded by the cancel token. No additional debouncing needed.
+### Completion Enhancement Flow (Static Methods)
 
-**Settings path:** New setting `bbj.compiler.autoCheck` with values `'onChange' | 'onSave' | 'off'` (default `'onChange'`). Read from workspace config at invocation time for hot-reload compatibility, consistent with how other settings are read via `wsManager`.
+```
+User types "MyClass."
+    |
+    v
+BBjCompletionProvider.getCompletion()
+    |
+    v (delegates to DefaultCompletionProvider)
+BbjScopeProvider.getScope() { context.property === 'member' }
+    |
+    v
+typeInferer.getType(receiver) -> BbjClass (isClass(reference))
+    |
+    v (detect: isSymbolRef(receiver) && isClass(receiver.symbol.ref))
+createBBjClassStaticMemberScope(bbjType)
+    |
+    v (filter: member.static === true)
+Completion items showing only static methods/fields
+```
 
-**Registration in BBjSharedModule:**
+### Deprecated Method Flow
 
-```typescript
-// bbj-module.ts BBjSharedModule:
-export const BBjSharedModule = {
-    lsp: {
-        NodeKindProvider: () => new BBjNodeKindProvider(),
-        DocumentUpdateHandler: (services) => new BBjDocumentUpdateHandler(services),  // NEW (if onSave needed)
-    },
-    workspace: {
-        DocumentBuilder: (services) => new BBjDocumentBuilder(services),
-        WorkspaceManager: (services) => new BBjWorkspaceManager(services),
-        IndexManager: (services) => new BBjIndexManager(services)
-    }
-};
+```
+InteropService.java: m.isAnnotationPresent(Deprecated.class) -> mi.deprecated = true
+    |
+    v JSON-RPC response
+java-interop.ts: resolveClass()
+    |
+    v (method as Mutable<JavaMethod>).deprecated = rawMethod.deprecated
+java-types.langium: JavaMethod.deprecated?: boolean
+    |
+    v
+bbj-completion-provider.ts: createReferenceCompletionItem()
+    |
+    v node.deprecated -> tags: [CompletionItemTag.Deprecated]
+IDE completion list (strikethrough on deprecated items)
+```
+
+### EM Config Fix Flow (web.bbj)
+
+```
+VS Code: Commands.cjs runWeb()
+    -> configPath from settings (may be "" or a path)
+    -> cmd args: ... "${token}" "${configPath}"
+
+web.bbj ARGV(9) = configFile!
+    -> CURRENT: passes any value including "--" to app!.setString(CONFIG_FILE)
+    -> FIXED: guard against "--" same as sscp is guarded
+    -> if configFile == "--" or empty: use BBjAPI().getConfig().getConfigFileName()
 ```
 
 ---
 
-## New vs Modified Components
+## Suggested Build Order
 
-### New Files
+Dependencies flow from most-isolated to most-coupled:
 
-| File | Type | Purpose |
-|------|------|---------|
-| `bbj-cpl-compiler-service.ts` | New service | Subprocess invocation, stderr parsing, LSP Diagnostic mapping |
-| `bbj-document-symbol-provider.ts` | New LSP provider | Outline resilience with parse-error fallback |
-| `bbj-document-update-handler.ts` | New shared service (optional) | On-save tracking if on-save trigger mode is required |
+**Phase 1 — Isolated fixes (single-file, no grammar regen needed):**
+1. `releaseVersion!` (#379) — `bbj-token-builder.ts` only, 2-line LONGER_ALT fix. Highest confidence, lowest risk, zero grammar regeneration.
+2. config.bbx highlighting (#381) — `package.json` only, add grammar entry. No code change.
+3. EM Config "--" fix (#382) — `tools/web.bbj` guard. Self-contained.
 
-### Modified Files
+**Phase 2 — Grammar-only additions (require `langium generate`):**
+4. EXIT int verb (#376) — grammar rule update, test.
+5. SERIAL verb (#375) — new grammar rule + SingleStatement entry, test.
+6. ADDR fix (#377) — verify/update AddrStatement rule, test.
+7. DECLARE in class (#380) — grammar ClassDecl alternative.
 
-| File | Change | Scope |
-|------|--------|-------|
-| `bbj-document-builder.ts` | Add `invokeBBjCPLAndMerge()`, `shouldRunCPL()` methods | ~40 lines in `buildDocuments()` and new guard methods |
-| `bbj-document-validator.ts` | Add `applyHierarchyFilter()` private method, override `validateDocument()` | ~25 lines |
-| `bbj-module.ts` | Register `DocumentSymbolProvider`, `BBjCPLCompilerService`, optional `DocumentUpdateHandler` | ~15 lines in DI declarations and type definitions |
-| `main.ts` | Add `cplTrigger` to settings change handler | ~5 lines |
+**Phase 3 — Completion enhancements (depend on existing type inferer, no java-interop change):**
+8. Static methods (#374) — scope provider + optional completion provider update.
+9. `.class` property (#373) — type inferer branch addition.
+10. Constructor completion — completion provider interceptor.
 
----
-
-## Component Boundaries
-
-| Component | Communicates With | Protocol |
-|-----------|-------------------|----------|
-| `BBjCPLCompilerService` | `BBjDocumentBuilder` | Direct method call (DI-injected) |
-| `BBjCPLCompilerService` | `BBjWorkspaceManager` | Via `services.shared.workspace.WorkspaceManager` cast |
-| `BBjCPLCompilerService` | `bbjcpl` subprocess | `child_process.spawn` + stderr pipe |
-| `BBjDocumentBuilder` | `BBjCPLCompilerService` | DI-injected reference in `BBjServices.compiler.CPLCompilerService` |
-| `BBjDocumentSymbolProvider` | Langium AST | `document.parseResult.value` direct access |
-| `BBjDocumentUpdateHandler` | `BBjDocumentBuilder` | `wasRecentlySaved(uri)` method call |
+**Phase 4 — Cross-layer change (requires Java build + Langium interface + LS change):**
+11. Deprecated method indicator — Java reflection change, grammar interface, resolver, completion. Highest coupling.
 
 ---
 
-## BBjCPL Invocation Details
+## Integration Points: New vs. Modified
 
-**Command for diagnostic-only mode** (confirmed from BASIS docs, `-N` flag):
-```
-bbjcpl -N [additional options] filename.bbj
-```
+No new files are required for any v3.9 feature. All changes integrate into existing files.
 
-The `-N` flag (validate-only) avoids producing tokenized `.bbj` output as a side effect. The existing VS Code `compile` command (in `Commands.cjs`) uses the same binary path pattern:
-```javascript
-"${home}/bin/bbjcpl${os.platform() === 'win32' ? '.exe' : ''}"
-```
-
-**Stderr format (LOW confidence - needs empirical verification):**
-
-From the BASIS documentation search results, BBjCPL error messages include both the BBj line number and the ASCII file line number. The exact format requires a live test run. Likely format:
-```
-filename.bbj(42): Error: Undeclared variable 'foo!'
-```
-or possibly:
-```
-Error in filename.bbj at line 42: ...
-```
-
-The regex in `BBjCPLCompilerService.parseCPLOutput()` must be verified empirically against a real BBj installation before shipping.
+| Feature | Files Modified | Change Scope |
+|---------|---------------|--------------|
+| EXIT int verb (#376) | `bbj.langium` | Grammar rule update |
+| SERIAL verb (#375) | `bbj.langium` | New grammar rule + SingleStatement |
+| ADDR fix (#377) | `bbj.langium` | Verify/fix AddrStatement rule |
+| `releaseVersion!` fix (#379) | `bbj-token-builder.ts` | 2 lines |
+| DECLARE in class (#380) | `bbj.langium` | ClassDecl grammar alternative |
+| EM Config "--" fix (#382) | `tools/web.bbj` | Guard configFile against "--" |
+| config.bbx highlighting (#381) | `bbj-vscode/package.json` | Add grammar entry for bbx.tmLanguage.json |
+| Static methods (#374) | `bbj-scope.ts` | Scope filtering for class receivers |
+| `.class` property (#373) | `bbj-type-inferer.ts` | Special-case branch for `.class` |
+| Constructor completion | `bbj-completion-provider.ts` | New completion interceptor |
+| Deprecated indicator | `MethodInfo.java`, `InteropService.java`, `java-types.langium`, `java-interop.ts`, `bbj-completion-provider.ts` | Full cross-layer change |
 
 ---
 
-## Diagnostic Merge Data Flow
+## Anti-Patterns
 
-```
-document.diagnostics (after Langium validate + hierarchy filter)
-    = [lexErr1, parseErr2, linkWarn3, semanticErr4]  <- source: 'bbj'
+### Anti-Pattern 1: Modifying Generated Files
 
-BBjCPLCompilerService.compile()
-    = [cplErr5, cplErr6]  <- source: 'BBjCPL', severity: Error
+**What people do:** Edit `generated/ast.ts` or `generated/grammar.ts` directly.
+**Why it's wrong:** These files are overwritten on every `langium generate` run.
+**Do this instead:** Modify `bbj.langium` or `java-types.langium` and re-run `langium generate`.
 
-invokeBBjCPLAndMerge() mutates document.diagnostics
-    = [lexErr1, parseErr2, linkWarn3, semanticErr4, cplErr5, cplErr6]
+### Anti-Pattern 2: Adding LONGER_ALT Without idWithSuffix
 
-notifyDocumentPhase(Validated)
-    -> addDiagnosticsHandler listener (Langium internal)
-    -> connection.sendDiagnostics({ uri, diagnostics })
-    -> client receives merged array, all squiggles updated atomically
-```
+**What people do:** When fixing a keyword-as-identifier tokenization bug, set `LONGER_ALT = id` only.
+**Why it's wrong:** Identifiers with `!`, `$`, or `%` suffixes still break because `idWithSuffix` is not checked first.
+**Do this instead:** Always set `LONGER_ALT = [idWithSuffix, id]` for all keyword tokens that can appear as identifier prefixes. This is the bug in #379.
 
----
+### Anti-Pattern 3: Scope Resolution Without Cycle Protection
 
-## Patterns to Follow
+**What people do:** Traverse `bbjType.extends` chain recursively without depth/visited guards.
+**Why it's wrong:** Cyclic inheritance (or parser-recovered partial ASTs) causes infinite loops.
+**Do this instead:** Always pass and check a `visited: Set<BbjClass>` and `depth < MAX_INHERITANCE_DEPTH` guard, as established throughout `bbj-scope.ts` and `bbj-completion-provider.ts`.
 
-### Pattern 1: Post-Validate Extension in buildDocuments()
+### Anti-Pattern 4: Completion Items Without Snippet Syntax on Methods
 
-**What:** Append async operations after `super.buildDocuments()` in the existing override.
-**When to use:** Any operation that needs the final validated AST and diagnostics.
-**Established by:** `addImportedBBjDocuments()` and `revalidateUseFilePathDiagnostics()` already follow this pattern.
+**What people do:** Return a plain label for method completion without `insertText` using snippet syntax.
+**Why it's wrong:** Users must manually type parameter placeholders; tab-stop navigation is unavailable.
+**Do this instead:** Follow the pattern in `createReferenceCompletionItem()`: set `insertTextFormat = 2` and `insertText = label((p, i) => "${" + (i + 1) + ":" + p + "}")`.
 
-```typescript
-protected override async buildDocuments(
-    documents: LangiumDocument[], options: BuildOptions, cancelToken: CancellationToken
-): Promise<void> {
-    await super.buildDocuments(documents, options, cancelToken);
-    if (!this.isImportingBBjDocuments) {
-        await this.addImportedBBjDocuments(documents, options, cancelToken);
-        await this.revalidateUseFilePathDiagnostics(documents, cancelToken);
-        await this.invokeBBjCPLAndMerge(documents, cancelToken);  // NEW
-    }
-}
-```
+### Anti-Pattern 5: Direct Import of main.ts in Service Files
 
-### Pattern 2: notifyDocumentPhase for Incremental Diagnostic Updates
-
-**What:** Call `notifyDocumentPhase(doc, DocumentState.Validated, cancelToken)` after mutating `document.diagnostics`.
-**When to use:** Any time updated diagnostics need pushing without re-running the full build pipeline.
-**Established by:** `revalidateUseFilePathDiagnostics()` already calls this to remove false-positive USE path diagnostics.
-
-### Pattern 3: Lazy Settings Access via wsManager
-
-**What:** Read settings from `BBjWorkspaceManager` at invocation time, not at constructor time.
-**When to use:** Any setting that can change via hot-reload (`bbj.home`, trigger mode).
-**Established by:** All existing services that read `bbjdir` or `prefixes` do this pattern.
+**What people do:** Import from `main.ts` to access the LSP connection for notifications.
+**Why it's wrong:** `createConnection` executes at module load time; importing `main.ts` from service files crashes Vitest workers.
+**Do this instead:** Use the `bbj-notifications.ts` isolation module for all notification sending. Never import from `main.ts` in language service files.
 
 ---
 
-## Anti-Patterns to Avoid
+## Scaling Considerations
 
-### Anti-Pattern 1: Registering a Separate onBuildPhase Listener for CPL in main.ts
+This is developer tooling (one LS process per IDE window). Concerns are per-document performance, not horizontal scale.
 
-**What people do:** Register `documentBuilder.onBuildPhase(DocumentState.Validated, ...)` in `main.ts` to fire CPL.
-**Why it's wrong:** This listener fires AFTER Langium has already called `sendDiagnostics` (Langium registers its own `onDocumentPhase` listener that fires first). The merged CPL diagnostics would arrive in a second `publishDiagnostics` notification, causing visible diagnostic flicker - squiggles appear, then change.
-**Do this instead:** Merge inside `buildDocuments()` before `notifyDocumentPhase` so one `sendDiagnostics` carries all diagnostics.
-
-### Anti-Pattern 2: Running BBjCPL on Every Keystroke Without Relying on Build Queue
-
-**What people do:** Hook CPL invocation directly into `didChangeContent` without cancel token support.
-**Why it's wrong:** BBjCPL is a subprocess - it doesn't support mid-process cancellation. Concurrent invocations pile up on large files.
-**Do this instead:** CPL runs inside `buildDocuments()` which is already guarded by Langium's `WorkspaceLock` and `cancelToken`. Rapid edits cancel the previous build, so CPL is naturally debounced.
-
-### Anti-Pattern 3: Failing Silently on bbjcpl Not Found
-
-**What people do:** Return empty diagnostics when `bbjcpl` executable is missing.
-**Why it's wrong:** Users think CPL is running and producing no errors when it is not running at all.
-**Do this instead:** If `bbj.home` is set but the binary is not found, emit one `DiagnosticSeverity.Warning` at range (0,0)-(0,0): `"BBjCPL not found at {path}. Compiler checks disabled."` If `bbj.home` is not configured, log at debug level and return silently (user hasn't opted in).
-
-### Anti-Pattern 4: Mutating Document State from BBjCPLCompilerService
-
-**What people do:** Mark documents as needing relinking after CPL runs, or reset `document.state`.
-**Why it's wrong:** BBjCPL diagnostics are line-based, not AST-based. They do not affect reference resolution. Resetting document state triggers a full rebuild loop.
-**Do this instead:** Only mutate `document.diagnostics`. Never touch `document.state`.
-
----
-
-## Build Order Recommendation
-
-Given dependencies between new components:
-
-1. **`BBjDocumentValidator` (hierarchy filter)** - Modifies existing class, no new dependencies. Can ship independently for immediate noise-reduction benefit even before CPL integration.
-
-2. **`BBjDocumentSymbolProvider`** - Independent of CPL. Can ship with or before CPL integration. Straightforward override of `DefaultDocumentSymbolProvider`.
-
-3. **`BBjCPLCompilerService`** - Self-contained subprocess wrapper. No dependencies on other new components. Testable independently with a fixture `.bbj` file and a real BBj installation.
-
-4. **`BBjDocumentBuilder` (CPL integration)** - Depends on `BBjCPLCompilerService` being stable. Wire `invokeBBjCPLAndMerge()` into `buildDocuments()` after service is verified.
-
-5. **`BBjDocumentUpdateHandler`** (on-save trigger, optional) - Only needed if `'onSave'` trigger mode is a requirement. Can be deferred until trigger mode configuration is designed.
-
----
-
-## DI Registration Plan
-
-New additions to `bbj-module.ts`:
-
-```typescript
-// Extend BBjAddedServices type:
-export type BBjAddedServices = {
-    validation: { BBjValidator: BBjValidator },
-    java: { JavaInteropService: JavaInteropService },
-    types: { Inferer: TypeInferer },
-    compiler: { CPLCompilerService: BBjCPLCompilerService },  // NEW
-}
-
-// In BBjModule lsp section:
-lsp: {
-    DefinitionProvider: (services) => new BBjDefinitionProvider(services),
-    HoverProvider: (services) => new BBjHoverProvider(services),
-    CompletionProvider: (services) => new BBjCompletionProvider(services),
-    SemanticTokenProvider: (services) => new BBjSemanticTokenProvider(services),
-    SignatureHelp: () => new BBjSignatureHelpProvider(),
-    DocumentSymbolProvider: (services) => new BBjDocumentSymbolProvider(services),  // NEW
-},
-
-// In BBjModule compiler section (new top-level group):
-compiler: {
-    CPLCompilerService: (services) => new BBjCPLCompilerService(services),  // NEW
-},
-
-// In BBjSharedModule (optional, for on-save trigger):
-lsp: {
-    NodeKindProvider: () => new BBjNodeKindProvider(),
-    DocumentUpdateHandler: (services) => new BBjDocumentUpdateHandler(services),  // NEW (optional)
-},
-```
-
----
-
-## Integration Points
-
-### External Services
-
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| `bbjcpl` binary | `child_process.spawn` with stderr pipe | Use `-N` (validate-only) flag; path from `BBjWorkspaceManager.getBBjDir()` + `/bin/bbjcpl` |
-| LSP connection | `connection.sendDiagnostics` via Langium's `addDiagnosticsHandler` | No direct connection access needed - mutate `document.diagnostics` and call `notifyDocumentPhase` |
-
-### Internal Boundaries
-
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| `BBjDocumentBuilder` <-> `BBjCPLCompilerService` | Direct method call (DI-injected) | Service injected via `BBjServices.compiler.CPLCompilerService` |
-| `BBjDocumentValidator` <-> Langium pipeline | Return filtered `Diagnostic[]` from `validateDocument()` | Override intercepts after `super.validateDocument()` |
-| `BBjDocumentSymbolProvider` <-> Langium LSP | Registered as `lsp.DocumentSymbolProvider` in `BBjModule` | Replaces default implementation |
-| `BBjDocumentUpdateHandler` <-> `BBjDocumentBuilder` | `wasRecentlySaved(uri)` method call | Optional - only if on-save mode is required |
+| Concern | Current state | Watch for in v3.9 |
+|---------|--------------|-----------|
+| CPU in multi-project workspaces | Known issue #232, mitigations documented | Static member scope filtering adds traversal; keep depth-bounded |
+| Java class resolution | Mutex + dedup + 20-depth + 30s timeout | Deprecated field adds one boolean; negligible overhead |
+| Grammar complexity | 47 known Chevrotain ambiguities, all safe | Each new verb may add ambiguity; test with parser |
+| Completion latency | Javadoc in completion items added in v3.8 | Constructor completion adds class lookup; monitor in tests |
 
 ---
 
 ## Sources
 
-- Langium 4.1.3 source: `bbj-vscode/node_modules/langium/lib/workspace/document-builder.d.ts` (HIGH confidence - direct inspection)
-- Langium 4.1.3 source: `bbj-vscode/node_modules/langium/lib/workspace/documents.d.ts` - `DocumentState` enum (HIGH confidence)
-- Langium 4.1.3 source: `bbj-vscode/node_modules/langium/lib/lsp/document-symbol-provider.d.ts` (HIGH confidence)
-- Langium 4.1.3 source: `bbj-vscode/node_modules/langium/lib/lsp/document-update-handler.d.ts` (HIGH confidence)
-- Langium 4.1.3 source: `bbj-vscode/node_modules/langium/lib/lsp/language-server.js` lines 268-285 - `addDiagnosticsHandler` implementation confirming `onDocumentPhase(Validated)` emit (HIGH confidence)
-- Existing `bbj-document-builder.ts` - `notifyDocumentPhase` and `revalidateUseFilePathDiagnostics` usage patterns (HIGH confidence)
-- Existing `bbj-document-validator.ts` - `toDiagnostic` severity override pattern (HIGH confidence)
-- Existing `bbj-module.ts` - DI registration conventions (HIGH confidence)
-- BASIS BBjCPL documentation: https://documentation.basis.com/BASISHelp/WebHelp/util/bbjcpl_bbj_compiler.htm (MEDIUM confidence - found via search, confirms stderr output and -N flag)
-- BBjCPL stderr output format: LOW confidence - exact regex pattern needs empirical verification against a real BBj installation
-- [Langium Document Lifecycle docs](https://langium.org/docs/reference/document-lifecycle/) (MEDIUM confidence - found via search)
+All findings from direct codebase inspection (HIGH confidence):
+
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj.langium` — grammar, ExitWithNumberStatement, AddrStatement
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj-token-builder.ts` — LONGER_ALT patterns, RELEASE_NL/RELEASE_NO_NL gap
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj-completion-provider.ts` — completion logic, Javadoc integration
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj-scope.ts` — member scope dispatch, createBBjClassMemberScope
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj-type-inferer.ts` — type inference, isClass branch
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/java-interop.ts` — resolveClass, DocumentationInfo population
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/java-types.langium` — JavaMethod interface (no deprecated field)
+- `/Users/beff/_workspace/bbj-language-server/java-interop/src/main/java/bbj/interop/data/MethodInfo.java` — confirmed: no deprecated field
+- `/Users/beff/_workspace/bbj-language-server/java-interop/src/main/java/bbj/interop/InteropService.java` — confirmed: no @Deprecated inspection
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/tools/web.bbj` — "--" guard for sscp, missing guard for configFile
+- `/Users/beff/_workspace/bbj-language-server/bbj-intellij/src/main/java/com/basis/bbj/intellij/actions/BbjRunActionBase.java` — getConfigPath(), getConfigPathArg()
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/package.json` — grammar registrations (bbx.tmLanguage.json not registered)
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/syntaxes/bbx.tmLanguage.json` — exists, scopeName: "source.bbx", not wired up
 
 ---
 
-*Architecture research for: BBjCPL integration with Langium-based BBj Language Server*
-*Researched: 2026-02-19*
+*Architecture research for: BBj Language Server v3.9 Quick Wins*
+*Researched: 2026-02-20*

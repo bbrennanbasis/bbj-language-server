@@ -1,25 +1,24 @@
 # Project State: BBj Language Server
 
-**Last Updated:** 2026-02-20
+**Last Updated:** 2026-02-21
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-20)
+See: .planning/PROJECT.md (updated 2026-02-21)
 
 **Core Value:** BBj developers get consistent, high-quality language intelligence — syntax highlighting, error diagnostics, code completion, run commands, and Java class/method completions — in both VS Code and IntelliJ through a single shared language server.
 
-**Current Focus:** v3.9 Quick Wins — Phase 59: Java Class Reference Features (Complete)
+**Current Focus:** Planning next milestone
 
 ---
 
 ## Current Position
 
-Phase: 59 of 59 (Java Class Reference Features) — Complete
-Plan: 3 of 3 in current phase
-Status: Plan 03 Complete
-Last activity: 2026-02-20 — Completed 59-03-PLAN.md (deprecated strikethrough FEAT-03, constructor completion FEAT-04, 511 tests pass)
+Phase: 59 of 59 — All phases complete
+Status: v3.9 shipped
+Last activity: 2026-02-21 — Completed v3.9 Quick Wins milestone (bug fixes, grammar additions, Java class reference features)
 
-Progress: [██████████] 100% (v3.9)
+Progress: [██████████] 100% (v3.9 shipped)
 
 ---
 
@@ -28,22 +27,19 @@ Progress: [██████████] 100% (v3.9)
 ### Cumulative
 
 **Started:** 2026-02-01
-**Milestones shipped:** 15
+**Milestones shipped:** 16
 **Phases completed:** 59
 **Plans completed:** 143
-**Days elapsed:** 19
-**Velocity:** ~7.5 plans/day
+**Days elapsed:** 21
+**Velocity:** ~6.8 plans/day
 
 ### Recent History
 
-**v3.9 (In Progress: 2026-02-20):**
-- Phase 57 Plan 01: 2 tasks, 5 files, 2 min
-- Phase 57 Plan 02: 2 tasks, 5 files, 10 min
-- Phase 58 Plan 01: 2 tasks, 3 files, 18 min
-- Phase 58 Plan 02: 2 tasks, 2 files, 3 min
-- Phase 59 Plan 01: 2 tasks, 6 files, 3 min
-- Phase 59 Plan 02: 2 tasks, 3 files, 3 min
-- Phase 59 Plan 03: 2 tasks, 2 files, 5 min
+**v3.9 (Shipped: 2026-02-21):**
+- Duration: 1 day
+- Phases: 3 (57-59)
+- Plans: 8
+- Key: Bug fixes, grammar additions (EXIT/SERIAL/ADDR), Java class reference features (.class, static methods, deprecated, constructors)
 
 **v3.8 (Shipped: 2026-02-20):**
 - Duration: 1 day
@@ -63,87 +59,38 @@ Progress: [██████████] 100% (v3.9)
 
 ### Active Constraints
 
-- TEST-03 (DEF FN `# Project State: BBj Language Server
-
-**Last Updated:** 2026-02-20
-
-## Project Reference
-
-See: .planning/PROJECT.md (updated 2026-02-20)
-
-**Core Value:** BBj developers get consistent, high-quality language intelligence — syntax highlighting, error diagnostics, code completion, run commands, and Java class/method completions — in both VS Code and IntelliJ through a single shared language server.
-
-**Current Focus:** v3.9 Quick Wins — Phase 59: Java Class Reference Features (Complete)
-
----
-
-## Current Position
-
-Phase: 59 of 59 (Java Class Reference Features) — Complete
-Plan: 3 of 3 in current phase
-Status: Plan 03 Complete
-Last activity: 2026-02-20 — Completed 59-03-PLAN.md (deprecated strikethrough FEAT-03, constructor completion FEAT-04, 511 tests pass)
-
-Progress: [██████████] 100% (v3.9)
-
----
-
- suffix completion) skipped — Langium grammar follower limitation
+- TEST-03 (DEF FN suffix completion) skipped — Langium grammar follower limitation
 - bbj-notifications.ts isolation module must be preserved — importing main.ts from shared services crashes tests
 - 3 parser.test.ts assertions DISABLED — require Java classpath unavailable in EmptyFileSystem test environment
 
 ### Decisions
 
 Full decision log in PROJECT.md Key Decisions table. Key recent decisions:
-- [Phase 59]: Deprecated items: strikethrough via CompletionItemTag.Deprecated only — no sort change, no label suffix
-- [Phase 59]: Constructor completion: getConstructorCompletion() walks AST to find ConstructorCall, resolves class, offers each overload as separate Constructor item
-- [Phase 59]: .class type-inferer check placed before member.ref resolution to short-circuit all other resolution paths
-- [Phase 59]: isClassRef detection via SymbolRef.symbol.ref → isJavaClass enables static-only completion for USE class references
-- [Phase 59]: StreamScopeWithPredicate used to inject .class AstNodeDescription as outer scope wrapper (createScopeForNodes only accepts AstNode)
-- [Phase 59]: Java DTO uses isDeprecated but Langium type uses deprecated — explicit mapping applied in java-interop.ts during resolveClass()
-- [Phase 59]: getMethods() preserved over getDeclaredMethods() so inherited static methods from superclasses appear in completion
-- [Phase 59]: Constructor resolution reuses JavaMethod type — name=simpleName, returnType=FQN, isStatic=false
-- [Phase 58-grammar-additions]: ADDR fileid changed from StringLiteral to Expression — allows variable references and computed paths, existing string literal tests remain valid
-- [Phase 58-grammar-additions]: records and recsize grouped as optional pair in SerialStatement — both must appear together per BBj syntax
-- [Phase 58-grammar-additions]: Use restrictive EXIT_NO_NL pattern [0-9(+\-] lookahead to prevent matching flow-control keywords like 'else' in inline-if; keep kind='EXIT' for bare EXIT
-- [Phase 57]: Guard checkDeclareNotInClassBody on $type === 'VariableDecl' to prevent FieldDecl subtypes from being flagged
-- [Phase 57]: Cast BBjClassMember to { visibility?: string } in linker and validator to handle VariableDecl addition to union type
-- [Phase 57-bug-fixes]: Strip '--' EM Config sentinel silently from classpath in all run commands (VS Code + IntelliJ)
-- [Phase 57-bug-fixes]: VS Code configurationDefaults files.associations used to exclude config.bbx and config.min from BBj language; IntelliJ TextMate bundle lacks filename-exclusion support — documented as limitation
-- [Phase 56]: method.docu populated at class resolution time so completion provider can access synchronously
-- [Phase 56]: notifyJavaConnectionError uses window.showErrorMessage — user-actionable issue requiring prominent feedback
-- [Phase 55]: Removed MethodCall CAST branches — unreachable since Phase 33 CastExpression grammar rule
-- [Phase 54]: Use toContain/RegExp over toBe/string for error message assertions — tolerates future format changes
-- [Phase 53]: bbj-notifications.ts isolation module — importing main.ts crashes tests at module load time
-- [Phase 59]: Two-phase resolveClass: synchronously set isStatic/deprecated before registering in resolvedClasses, eliminating race condition where static filter saw empty isStatic
-- [Phase 59]: MemberCall isClassRef extension dropped — old JAR does not send isStatic for fields; FQN paths continue showing all members until JAR is updated
-- [Phase 59]: ( trigger returns empty CompletionList (not undefined) — prevents slow fallthrough to default completion engine when constructor completion is unavailable
+- [Phase 59]: Two-phase resolveClass: synchronously set isStatic/deprecated before registering in resolvedClasses
+- [Phase 59]: isClassRef via SymbolRef.symbol.ref → isJavaClass for static-only completion filtering
+- [Phase 59]: MemberCall isClassRef extension dropped — old JAR does not send isStatic for fields
+- [Phase 59]: ( trigger returns empty CompletionList (not undefined) — prevents slow fallthrough
+- [Phase 59]: CompletionItemTag.Deprecated only — no sortText change, no label suffix
 
 ### Tech Debt
 
 - CPU stability mitigations documented but not yet implemented (#232)
 - 19 LSP4IJ experimental API usages (expected, requires LSP4IJ to stabilize)
 - BbjCompletionFeature depends on LSPCompletionFeature API that may change
-- IntelliJ TextMate bundle cannot exclude config.bbx at filename level — IntelliJ users must override in Settings > File Types
+- IntelliJ TextMate bundle cannot exclude config.bbx at filename level
+- FQN path static-only filtering deferred — requires JAR redeployment
+- Static method return type inference gap — String.valueOf(2) does not assign type
 
 ### Blockers/Concerns
 
 None
 
-### Quick Tasks Completed
-
-| # | Description | Date | Commit |
-|---|-------------|------|--------|
-| 14 | Fix manual release workflow: pass -Pversion to verifyPlugin/publishPlugin | 2026-02-17 | 8956e26 |
-| 13 | Fix IntelliJ multi-instance language server: replace grace period with LSP4IJ native timeout | 2026-02-16 | 293fea5 |
-
 ---
-| Phase 59-java-class-reference-features P04 | 19 | 1 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-02-20
-Stopped at: Completed 59-03-PLAN.md — deprecated strikethrough (FEAT-03) and constructor completion (FEAT-04) implemented, all 511 tests pass
+Last session: 2026-02-21
+Stopped at: Completed v3.9 milestone — all 11 requirements satisfied, milestone archived
 Resume file: None
 
 ---
@@ -167,9 +114,10 @@ Resume file: None
 | v3.6 IntelliJ Platform API Compatibility | 48-49 | 2 | 2026-02-10 |
 | v3.7 Diagnostic Quality & BBjCPL Integration | 50-53 | 7 | 2026-02-20 |
 | v3.8 Test & Debt Cleanup | 54-56 | 7 | 2026-02-20 |
+| v3.9 Quick Wins | 57-59 | 8 | 2026-02-21 |
 
 See: `.planning/MILESTONES.md`
 
 ---
 
-*State updated: 2026-02-20 after completing 59-03 (deprecated strikethrough, constructor completion — Phase 59 complete)*
+*State updated: 2026-02-21 after v3.9 milestone completion*

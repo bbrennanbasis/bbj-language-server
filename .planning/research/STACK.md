@@ -1,349 +1,153 @@
-# Stack Research: BBjCPL Integration, Diagnostic Quality, and Outline Resilience
+# Stack Research
 
-**Domain:** Langium Language Server — External Compiler Integration
-**Researched:** 2026-02-19
-**Confidence:** HIGH
+**Domain:** Langium-based BBj language server — grammar additions, parser bug fixes, completion enhancements
+**Researched:** 2026-02-20
+**Confidence:** HIGH (all findings from direct codebase inspection; no library changes required)
 
-## Executive Summary
+## Summary
 
-This milestone adds three capabilities to the existing Langium 4.1.3 BBj language server: (1) invoking the BBjCPL compiler as an external process and mapping its error output to LSP diagnostics, (2) reducing diagnostic noise through cascading/filtering, and (3) making the document outline resilient to parse errors. All three capabilities use Node.js built-ins and Langium extension points already in the codebase. **No new runtime dependencies are required.** The only optional addition worth considering is a typed debounce implementation via the existing TypeScript compiler — not a new npm package.
+All v3.9 features fit within the existing technology stack. No new npm packages, no Java library upgrades, no new Gradle dependencies. Every capability needed already exists in the installed versions of Langium 4.1.3, Chevrotain 11.0.3, and vscode-languageserver-types 3.17.5. The work is entirely in-codebase changes to grammar files, service classes, the java-interop backend, and one legacy `.cjs` command file.
 
 ## Recommended Stack
 
-### Core Technologies — No New Additions Required
+### Core Technologies (unchanged)
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| `node:child_process` (built-in) | Node.js 20.18.1 | Invoke BBjCPL compiler | Built-in to Node.js LTS; `spawn()` provides streaming stderr/stdout, process kill for cancellation, and cross-platform support. No install required. |
-| Langium `DefaultDocumentSymbolProvider` | 4.1.3 (existing) | Outline resilience via override | `getSymbol()` and `getChildSymbols()` are `protected` and designed for override. Null-guarding inside these methods fixes crash-on-parse-error. Zero config changes. |
-| Langium `DefaultDocumentValidator` | 4.1.3 (existing) | Diagnostic cascading and external diagnostics merge | Already subclassed as `BBjDocumentValidator`. Override `validateDocument()` to merge compiler diagnostics and implement stop-after-parse-error cascade. |
-| Langium `ValidationCategory` | 4.1.3 (existing) | Separate slow compiler checks from fast LSP checks | Built-in `'fast'` / `'slow'` / `'built-in'` categories. Register BBjCPL checks as `'slow'` so they skip on every keystroke. |
-| Langium `DocumentBuilder.onBuildPhase` | 4.1.3 (existing) | Trigger BBjCPL after document reaches `Validated` state | Pattern already used in `main.ts` line 68. Safe hook point for async compiler invocation. |
-| TypeScript `ReturnType<typeof setTimeout>` | Built-in | Debounce compiler invocation | Native `setTimeout`/`clearTimeout` is sufficient; no lodash or ts-debounce needed in an ESM module that controls its own event loop. |
+| Langium | 4.1.3 (locked) | Grammar DSL, AST generation, LSP plumbing | Grammar rule additions, scope changes, and completion provider changes are standard Langium operations — no upgrade needed |
+| Chevrotain | 11.0.3 (locked) | Tokenizer underlying Langium | LONGER_ALT pattern (already used for 77 keywords) is the correct fix for #379 releaseVersion! identifier conflict |
+| vscode-languageserver-types | 3.17.5 (transitive) | LSP protocol types including CompletionItemTag | `CompletionItemTag.Deprecated = 1` already exists at this version — deprecated indicator needs no library upgrade |
+| vscode-languageserver | 9.0.1 (transitive) | LSP server runtime | No changes required |
+| TypeScript | 5.8.3 | Language | Interface additions to java-types.langium and new TypeScript service methods |
+| Vitest | 1.6.1 | Test runner | New parser/completion tests follow existing patterns exactly |
 
-### Supporting Libraries — No New Additions Required
+### Supporting Libraries (unchanged)
 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
-| `vscode-uri` | 3.1.0 (existing) | Convert LSP URIs to filesystem paths for `spawn()` | Use `URI.parse(doc.uri.toString()).fsPath` to get platform-correct path for compiler args. |
-| `path` (built-in) | Node.js 20 | Construct BBjCPL executable path from `bbj.home` setting | Use `path.join(bbjHome, 'bin', 'BBjCPL')` for Unix; `path.join(bbjHome, 'bin', 'BBjCPL.bat')` (or `BBjCPL.exe`) for Windows. |
-| `vscode-languageserver-types` | 9.0.1 (existing) | `Diagnostic`, `DiagnosticSeverity`, `Range`, `Position` types | Already imported in `bbj-document-validator.ts`; reuse for compiler-sourced diagnostics. |
+| langium-cli | 4.1.0 | Grammar code generation | Run `langium generate` after every `.langium` file edit — generates `generated/ast.ts` and `generated/grammar.ts` |
+| vscode-jsonrpc | 8.2.1 | JSON-RPC transport for java-interop | No changes; existing socket connection reused |
+| esbuild | 0.25.12 | Bundle LS for distribution | Run after TypeScript changes to produce `out/language/main.cjs` |
 
-### Development Tools — No Changes Required
+### Development Tools (unchanged)
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| vitest 1.6.1 (existing) | Unit-test compiler output parser | Add parser tests with sample BBjCPL stderr strings. No new test framework needed. |
-| esbuild 0.25.12 (existing) | Bundle for VS Code extension | `node:child_process` and `node:path` are Node built-ins; esbuild marks them external automatically with `--platform=node`. |
+| `langium generate` | Regenerates `src/language/generated/ast.ts` from `.langium` files | Must run after any grammar edit; generated file must not be hand-edited |
+| `vitest run` | Runs test suite | All 501 tests currently pass; new tests must maintain green baseline |
+| `node ./esbuild.mjs` | Builds language server bundle | Required before IntelliJ plugin picks up changes |
 
 ## Installation
 
+No new packages required.
+
 ```bash
-# No new packages needed.
-# All capabilities use Node.js 20.18.1 built-ins and Langium 4.1.3 APIs already present.
+# All dependencies already installed — no npm install needed for v3.9
+# After grammar changes, regenerate AST:
+npx langium generate
+# After TypeScript changes, rebuild bundle:
+node ./esbuild.mjs
 ```
 
-## Alternatives Considered
+## Feature-to-Stack Mapping
 
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| `node:child_process` spawn (built-in) | `execa` 9.x | When you need Promise-based API with better cancellation ergonomics AND you can accept a pure-ESM dependency with ~30KB added to bundle. Execa 9.x is ESM-only which matches the project's `"type": "module"`, so it would work. However the benefit is marginal: the compiler runs at most once per document save, not in a hot path. Prefer built-in `spawn` with a `promisify` wrapper or manual Promise wrapping. |
-| `node:child_process` spawn (built-in) | `cross-spawn` | Only needed if you encounter CMD/batch file execution issues on Windows. BBjCPL ships as a native binary (not a batch file), so `spawn()` works directly. Do NOT add `cross-spawn` unless Windows testing reveals issues. |
-| Native `setTimeout` debounce | `lodash.debounce` or `ts-debounce` | Only if the debounce needs flush/cancel API observable from tests. For compiler invocation (fire-and-forget after idle), plain `setTimeout`/`clearTimeout` is sufficient and ships zero bytes. |
-| Langium `'slow'` ValidationCategory | Custom `onDidSave` event handler in VS Code extension | Use `'slow'` category to stay inside Langium's build pipeline and benefit from `CancellationToken` propagation. A VS Code-side save handler cannot be used for IntelliJ compatibility. |
-| Override `BBjDocumentValidator.validateDocument` | Separate LSP `textDocument/publishDiagnostics` call | Merging compiler diagnostics inside the Langium validator keeps a single diagnostic source per document and prevents overwrite races. Publishing from outside Langium's pipeline risks Langium clearing compiler diagnostics on the next build cycle. |
-| Override `DefaultDocumentSymbolProvider.getSymbol` | Replace with full custom provider | `getSymbol` and `getChildSymbols` are `protected` and directly overridable. A full replacement would duplicate unchanged logic (name resolution, symbol kinds). Override only, stay DRY. |
+Each v3.9 feature maps to existing stack capabilities with specific integration points:
+
+### Grammar verb additions (EXIT int, SERIAL)
+
+**Files touched:** `bbj.langium`, `generated/ast.ts` (auto-regenerated)
+
+- `EXIT int` (#376): Grammar rule `ExitWithNumberStatement` at line 473-474 has a precedence bug. Current form `kind='EXIT' | RELEASE_NL | RELEASE_NO_NL exitVal=Expression` means EXIT has no `exitVal`, only RELEASE does. Fix: change to `(kind='EXIT' exitVal=Expression?) | RELEASE_NL exitVal=Expression | RELEASE_NO_NL exitVal=Expression`. No new tokenizer custom rule needed — Expression handles integer literals already.
+
+- `SERIAL` (#375): Not yet in `SingleStatement` list (confirmed TODO in VERBs.md). Add a `SerialStatement` rule. Pattern from BBj docs: `SERIAL fileid{,MODE=string}{,ERR=lineref}`. Follows same structure as `OpenStatement` without the channel number. Add to `SingleStatement` union; `SERIAL` keyword is non-reserved so `BBjTokenBuilder` LONGER_ALT handling (lines 39-49) already covers it automatically.
+
+- `ADDR` (#377): Already implemented (grammar line 643, VERBs.md shows "OK"). Issue #377 may refer to a specific variant (e.g., `ADDR` as a function rather than verb) or a test coverage gap — verify against issue details before making changes.
+
+### Parser bug fixes
+
+**Files touched:** `bbj-token-builder.ts`, `Commands.cjs`, VS Code `package.json`
+
+- `releaseVersion! parse error` (#379): `RELEASE_NL` and `RELEASE_NO_NL` are custom Chevrotain terminal tokens with negative-lookahead regexes (`/RELEASE(?!\s*(;\s*|\r?\n))/i`). When `releaseVersion!` is encountered, the regex matches the `RELEASE` prefix — the negative lookahead only excludes end-of-line, not word characters. Fix: tighten the regex to require that `RELEASE` is not followed by any word character: `/RELEASE(?![\w_])/i` for both tokens. This is safe because all legitimate `RELEASE expr` uses start with whitespace after RELEASE. The existing LONGER_ALT on the token (lines 52-57 of `bbj-token-builder.ts`) then ensures `releaseVersion!` tokenizes as `ID_WITH_SUFFIX` first.
+
+- `DECLARE in class outside methods` (#380): `ClassMember` rule at line 346 is `FieldDecl | MethodDecl`. `VariableDecl` (`declare` statement) is not in `ClassMember`. Fix: add `VariableDecl` as a third alternative in `ClassMember`, or introduce a separate rule (`ClassVariableDecl`) that mirrors `VariableDecl`. Since `VariableDecl` is already defined (line 308-309), the grammar change is one line.
+
+- `EM Config "--" startup failure` (#382): In `Commands.cjs` line 97, `configPath` is appended unconditionally to the `web.bbj` command string. When `configPath` is empty string, BBj receives `""` as the 10th argument which it interprets as a double-dash separator causing startup failure. The GUI run path at lines 229-230 already has the correct pattern: `const configArg = configPath ? \`-c"${configPath}" \` : ''`. Fix: apply the same conditional guard to the `runWeb` function's command string.
+
+- `config.bbx not highlighted` (#381): The VS Code `package.json` registers only one language `"id": "bbj"` with extensions including `.bbx` (line 34). The `bbx.tmLanguage.json` grammar file exists in `syntaxes/` but is never registered as a grammar contribution in `package.json`. There is no `"language": "bbx"` grammar entry. Fix: add a second language entry for `bbx` in `package.json` with its own `id`, extension `.bbx`, and grammar pointing to `./syntaxes/bbx.tmLanguage.json`. Note: `.bbx` is also in the `bbj` language extensions — removing it from `bbj` and registering it under `bbx` may be the correct approach depending on whether `bbx` files should be parsed by the language server.
+
+### Completion enhancements
+
+**Files touched:** `java-types.langium`, `java-interop.ts`, `InteropService.java`, `MethodInfo.java`, `bbj-completion-provider.ts`, `bbj-type-inferer.ts`
+
+- `Static method completion on class references` (#374): Requires end-to-end changes across three layers:
+  1. **java-interop Java side** (`InteropService.java`, `MethodInfo.java`): Add `public boolean isStatic` to `MethodInfo`. In `loadClassInfo()`, set `mi.isStatic = Modifier.isStatic(m.getModifiers())`. `java.lang.reflect.Modifier` is already imported.
+  2. **Langium schema** (`java-types.langium`): Add `isStatic?: boolean` to the `JavaMethod` interface.
+  3. **Scope provider** (`bbj-scope.ts`): In `getScope()` for the `isMemberCall` branch, when `isJavaClass(receiverType)`, filter `receiverType.methods` to only `m.isStatic === true` when the receiver is a class reference (not an instance). The `BBjTypeInferer.getTypeInternal()` already returns the class node itself when `isClass(reference)` — this is the signal that the receiver is a class, not an instance.
+  4. **Type inferer**: No change needed — `isClass` branch already works.
+
+- `.class property` (#373): When `someVar!.class` is accessed, the `MemberCall` member resolves to nothing (`.class` is not a declared method). Fix in `bbj-type-inferer.ts` `getTypeInternal()`: add a check in the `isMemberCall` branch — if `expression.member.$refText.toLowerCase() === 'class'`, resolve to `javaInterop.getResolvedClass('java.lang.Class')`. No grammar change needed; `class` is a valid `ValidName` token already. No scope change needed; treat as a built-in pseudo-property.
+
+- `Constructor completion` for `new ClassName()`: The grammar already has `ConstructorCall` rule (`bbj.langium` line 836-842). `BBjTypeInferer` already handles `isConstructorCall` (line 53-54). Completion enhancement needed in `BBjCompletionProvider`: when the cursor is preceded by `new `, offer all known `BbjClass` names (from scope) and imported `JavaClass` names with constructor-style snippet insertion. Implement by overriding `getCompletion()` to detect the `new ` prefix context, then enumerate classes from `importedClasses()` in `BbjScopeProvider`.
+
+- `Deprecated method visual indicator`: `CompletionItemTag.Deprecated = 1` is confirmed in the installed `vscode-languageserver-types@3.17.5`. Two sub-parts:
+  1. **Java methods**: Add `public boolean deprecated` to `MethodInfo.java`. Set via `m.isAnnotationPresent(Deprecated.class)` in `InteropService.java`. Add `deprecated?: boolean` to `JavaMethod` in `java-types.langium`. In `bbj-completion-provider.ts` `createReferenceCompletionItem()`, add `tags: [CompletionItemTag.Deprecated]` when the resolved node has `deprecated: true`.
+  2. **BBj methods**: BBj has no native `@Deprecated` annotation. If the `DOCU` comment block contains `@deprecated`, parse it during class resolution in `java-interop.ts` and set a flag on the `MethodDecl`. This may be deferred — focus on Java method deprecated indicators first since those come from real Java reflection.
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `child_process.exec()` | Buffers all output in memory; crashes if compiler emits large error lists. No streaming. | `child_process.spawn()` with `stderr` data events. |
-| `child_process.execSync()` / `spawnSync()` | Blocks the Node.js event loop; freezes LSP response to all other requests while compiler runs. | Async `spawn()` wrapped in a Promise. |
-| `execa` (if added only for this) | Adds a dependency that must be kept up-to-date; ESM-only constraint adds complexity. Provides no benefit over `spawn()` + Promise wrapper for a once-per-save operation. | `child_process.spawn()` with manual Promise wrapper shown below. |
-| Storing compiler diagnostics in document state | `document.diagnostics` is overwritten by Langium on every build cycle. | Merge compiler diagnostics into the array returned by `validateDocument()` so Langium publishes them together. |
-| Debounce via `setTimeout` in VS Code extension (client side) | IntelliJ plugin cannot share client-side throttle logic. | Debounce inside the language server (in `bbj-document-builder.ts` or a new `BBjCompilerService`) so both clients benefit identically. |
-| Hardcoding `BBjCPL` path | Will fail when `bbj.home` is not set or changes. | Read from `BBjWorkspaceManager.getSettings().bbjHome`, construct with `path.join`, and guard with null check. |
-
-## Stack Patterns by Feature
-
-### Pattern 1: BBjCPL Invocation via `spawn()`
-
-**Trigger:** After `DocumentState.Validated` fires for a file document (not synthetic/external). Debounce 500ms to avoid re-running on every fast build cycle.
-
-**Implementation location:** New `BBjCompilerService` class, registered in `BBjModule` as a custom service, invoked from `BBjDocumentBuilder.buildDocuments` post-validation hook.
-
-```typescript
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
-import type { URI } from 'vscode-uri';
-
-interface CompilerError {
-  line: number;    // 0-based (LSP convention)
-  column: number;  // 0-based
-  message: string;
-  severity: 'error' | 'warning';
-}
-
-export async function invokeBBjCPL(
-  bbjHome: string,
-  filePath: string,
-  args: string[],
-  cancelSignal?: AbortSignal
-): Promise<CompilerError[]> {
-  const compilerPath = join(
-    bbjHome, 'bin',
-    process.platform === 'win32' ? 'BBjCPL.bat' : 'BBjCPL'
-  );
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(compilerPath, [...args, filePath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32'  // needed for .bat on Windows
-    });
-
-    let stderrBuf = '';
-    proc.stderr.setEncoding('utf8');
-    proc.stderr.on('data', (chunk: string) => { stderrBuf += chunk; });
-
-    // stdout for validate-only mode (-N flag) — BBjCPL writes errors to stderr
-    let stdoutBuf = '';
-    proc.stdout.setEncoding('utf8');
-    proc.stdout.on('data', (chunk: string) => { stdoutBuf += chunk; });
-
-    cancelSignal?.addEventListener('abort', () => proc.kill('SIGTERM'));
-
-    proc.on('close', (code) => {
-      if (cancelSignal?.aborted) return resolve([]);
-      resolve(parseBBjCPLOutput(stderrBuf + stdoutBuf));
-    });
-
-    proc.on('error', reject);
-  });
-}
-```
-
-**Confidence:** HIGH — `child_process.spawn()` documented in Node.js 20.18.1 official docs. Windows `.bat` execution requires `shell: true`; confirmed by Node.js docs and cross-spawn source.
-
----
-
-### Pattern 2: BBjCPL Output Parser
-
-BBjCPL error output format (from BASIS documentation): errors contain both the BBj line number and the ASCII file line number. The format observed in practice:
-
-```
-Error on line 42 (ASCII line 38): Syntax error - unexpected token 'END'
-Warning on line 10 (ASCII line 10): Undeclared variable 'myVar'
-```
-
-BASIS documentation states all error messages contain both BBj line number and ASCII file line number. The ASCII line number corresponds to the source file position.
-
-```typescript
-// Regex targeting the format BBjCPL emits
-const BBJ_ERROR_PATTERN = /^(Error|Warning|error|warning)\s+(?:on\s+)?(?:line\s+)?(\d+)(?:\s+\(ASCII\s+line\s+(\d+)\))?:?\s*(.+)$/im;
-
-export function parseBBjCPLOutput(output: string): CompilerError[] {
-  const errors: CompilerError[] = [];
-  for (const line of output.split('\n')) {
-    const match = BBJ_ERROR_PATTERN.exec(line.trim());
-    if (!match) continue;
-    const [, severityStr, bbjLine, asciiLine, message] = match;
-    // Prefer ASCII (source) line number; fall back to BBj line number
-    const lineNum = parseInt(asciiLine ?? bbjLine, 10);
-    errors.push({
-      line: Math.max(0, lineNum - 1),   // convert 1-based to 0-based
-      column: 0,                         // BBjCPL does not report columns
-      message: message.trim(),
-      severity: /^error/i.test(severityStr) ? 'error' : 'warning'
-    });
-  }
-  return errors;
-}
-```
-
-**Confidence:** MEDIUM — BASIS documentation confirms "all error messages contain both the BBj line number and the ASCII file line number." Exact format delimiter not documented publicly. The regex covers the documented content; adjust after empirical testing with actual BBjCPL output. The parser should be wrapped in a test with known output strings before integration.
-
-**Critical note:** Run `BBjCPL --help` or inspect its actual stderr output with a known broken file to validate the regex before shipping. This is the highest-risk piece in this milestone.
-
----
-
-### Pattern 3: Diagnostic Cascading via `ValidationOptions`
-
-Langium 4.1.3 `DefaultDocumentValidator.validateDocument()` already accepts `ValidationOptions` with `stopAfterParsingErrors` and `stopAfterLexingErrors` flags (verified in local `node_modules/langium/src/validation/document-validator.ts`).
-
-The existing `BBjDocumentValidator` does not yet set these options. Adding cascading:
-
-```typescript
-// In bbj-document-validator.ts
-export class BBjDocumentValidator extends DefaultDocumentValidator {
-
-  async validateDocument(
-    document: LangiumDocument,
-    options: ValidationOptions = {},
-    cancelToken = CancellationToken.None
-  ): Promise<Diagnostic[]> {
-    // Cascade: if Langium has parse errors, skip semantic + compiler checks.
-    // Parse errors make type inference and symbol resolution unreliable anyway.
-    const cascadeOptions: ValidationOptions = {
-      ...options,
-      stopAfterParsingErrors: true,  // suppress linking/semantic noise
-    };
-
-    const langiumDiags = await super.validateDocument(document, cascadeOptions, cancelToken);
-
-    // Only run compiler checks if there are no parse errors
-    const hasParseErrors = langiumDiags.some(
-      d => (d.data as DiagnosticData)?.code === DocumentValidator.ParsingError
-    );
-    if (hasParseErrors) {
-      return langiumDiags;
-    }
-
-    // Merge compiler diagnostics (from BBjCompilerService)
-    const compilerDiags = await this.compilerService.getDiagnostics(document);
-    return [...langiumDiags, ...compilerDiags];
-  }
-}
-```
-
-**Confidence:** HIGH — `stopAfterParsingErrors` flag confirmed in Langium 4.1.3 source at `/bbj-vscode/node_modules/langium/src/validation/document-validator.ts` lines 31-35. `DocumentValidator.ParsingError` constant confirmed at line 353.
-
----
-
-### Pattern 4: Outline Resilience via `DefaultDocumentSymbolProvider` Override
-
-The `DefaultDocumentSymbolProvider` (verified in local `node_modules/langium/src/lsp/document-symbol-provider.ts`) recursively calls `getSymbol()` for all AST nodes. When the document has parse errors, `astNode.$cstNode` can be `undefined` for recovered nodes, and `nameProvider.getNameNode()` may throw or return garbage.
-
-Fix: override `getSymbol()` with null guards.
-
-```typescript
-// New file: bbj-document-symbol-provider.ts
-import { DefaultDocumentSymbolProvider } from 'langium/lsp';
-import type { LangiumDocument, AstNode } from 'langium';
-import type { DocumentSymbol } from 'vscode-languageserver';
-
-export class BBjDocumentSymbolProvider extends DefaultDocumentSymbolProvider {
-
-  protected override getSymbol(document: LangiumDocument, astNode: AstNode): DocumentSymbol[] {
-    // Guard: skip nodes that Chevrotain error recovery inserted (no CST position)
-    if (!astNode.$cstNode) {
-      return this.getChildSymbols(document, astNode) ?? [];
-    }
-    try {
-      return super.getSymbol(document, astNode);
-    } catch {
-      // If name resolution throws on a recovered node, skip it silently
-      return [];
-    }
-  }
-
-  protected override getChildSymbols(document: LangiumDocument, astNode: AstNode): DocumentSymbol[] | undefined {
-    if (!astNode.$cstNode) {
-      return undefined;
-    }
-    return super.getChildSymbols(document, astNode);
-  }
-}
-```
-
-Register in `BBjModule` (language-specific services, not shared):
-
-```typescript
-// In bbj-module.ts, inside BBjModule:
-lsp: {
-  // ... existing providers ...
-  DocumentSymbolProvider: (services) => new BBjDocumentSymbolProvider(services),
-},
-```
-
-**Confidence:** HIGH — `DefaultDocumentSymbolProvider` source confirmed at `node_modules/langium/src/lsp/document-symbol-provider.ts`. Methods `getSymbol`, `createSymbol`, and `getChildSymbols` are all `protected`. Registration pattern via `BBjModule.lsp` DI confirmed by existing `DefinitionProvider`, `HoverProvider` registrations in `bbj-module.ts`.
-
----
-
-### Pattern 5: Debounce for Compiler Invocation
-
-500ms debounce prevents re-running the compiler on every intermediate build (e.g., Langium rebuilds as references resolve). Implement inside `BBjCompilerService` without external dependencies:
-
-```typescript
-export class BBjCompilerService {
-  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  scheduleCompile(document: LangiumDocument): void {
-    const key = document.uri.toString();
-    const existing = this.debounceTimers.get(key);
-    if (existing) clearTimeout(existing);
-
-    this.debounceTimers.set(key, setTimeout(async () => {
-      this.debounceTimers.delete(key);
-      await this.compile(document);
-    }, 500));
-  }
-
-  private async compile(document: LangiumDocument): Promise<void> {
-    // ... invoke BBjCPL, store results, trigger diagnostic refresh
-  }
-}
-```
-
-**Confidence:** HIGH — `setTimeout`/`clearTimeout` are Node.js globals available in ESM modules. `ReturnType<typeof setTimeout>` is the correct TypeScript type for both browser and Node contexts (Node 20+ returns a `Timeout` object, not a number).
-
----
-
-### Pattern 6: Slow Validation Category for Compiler Checks
-
-Langium's `ValidationCategory` system (`'fast'` | `'slow'` | `'built-in'`) controls which checks run on each build. Default `updateBuildOptions` runs only `['built-in', 'fast']` (confirmed in `document-builder.ts` line 145). Register compiler-triggered checks as `'slow'` to exclude them from keystroke builds:
-
-```typescript
-// In bbj-validator.ts or a new bbj-compiler-validator.ts
-registerValidationChecks(services);
-
-// Register compiler checks explicitly as 'slow'
-services.validation.ValidationRegistry.register(
-  { Program: checkWithCompiler },
-  validatorInstance,
-  'slow'   // only runs when explicitly requested, not on keystroke
-);
-```
-
-Trigger `'slow'` checks manually after debounce timeout, by calling `DocumentBuilder.build(docs, { validation: { categories: ['slow'] } })`.
-
-**Confidence:** HIGH — `ValidationCategory` types and `register()` signature confirmed in `node_modules/langium/src/validation/validation-registry.ts`. Default categories confirmed in `document-builder.ts` line 145.
-
-## Integration Points with Existing Services
-
-| New Feature | Existing Service | Integration Method |
-|------------|------------------|-------------------|
-| BBjCPL invocation | `BBjWorkspaceManager.getSettings()` | Read `bbjHome` setting for compiler path; read compiler flags from existing `bbj.compiler.*` settings already in `package.json` |
-| BBjCPL invocation | `BBjDocumentBuilder.shouldValidate()` | Only schedule compiler for `scheme === 'file'` documents that pass existing `shouldValidate` check — reuse same guard |
-| Compiler diagnostics | `BBjDocumentValidator` | Merge via `validateDocument()` override; use existing `DiagnosticData` type for `source` tagging (tag as `'BBjCPL'` to distinguish from Langium errors) |
-| Outline resilience | `BBjModule.lsp.DocumentSymbolProvider` | Register new `BBjDocumentSymbolProvider` in language-specific DI module (not shared module) |
-| Debounce | `BBjDocumentBuilder.buildDocuments` | Call `BBjCompilerService.scheduleCompile()` at the end of `buildDocuments`, after `super.buildDocuments()` completes |
-| Compiler settings | Existing `bbj.compiler.*` in `package.json` | 40+ compiler settings already defined (type checking flags, output flags, etc.) — read from `getSettings()`, no schema additions needed |
+| New npm packages for completion enhancements | Every capability (CompletionItemTag, scope APIs, type inferer) already exists in installed versions | Extend existing `BBjCompletionProvider` and `BbjScopeProvider` |
+| Langium upgrade to 4.2+ | No features needed from newer versions; upgrade risk with no benefit | Stay on 4.1.3 |
+| Separate custom tokenizer rules for SERIAL | BBjTokenBuilder's LONGER_ALT pattern handles all uppercase non-reserved keywords uniformly | Add SERIAL as a plain keyword in the grammar; it gets LONGER_ALT automatically |
+| Modifying `generated/ast.ts` directly | Auto-generated file; changes are overwritten by `langium generate` | Edit only `.langium` grammar files, then regenerate |
+| Adding `static` filtering at the BBj class level | BBj `STATIC` methods are valid instance-accessible in some contexts; filtering would break existing behavior | Filter `isStatic` only in the Java class member scope path (`isJavaClass(receiverType)` branch) |
+| Custom LSP extension for deprecated | Standard `CompletionItemTag.Deprecated = 1` is rendered by both VS Code and LSP4IJ as strikethrough | Use standard LSP tags array |
 
 ## Version Compatibility
 
-| Package | Version | Compatibility Notes |
-|---------|---------|---------------------|
-| `node:child_process` | Node.js 20.18.1 | `spawn()` stable since Node.js 0.1.90. `AbortSignal` integration available since Node.js 15.4.0. Safe. |
-| Langium `DefaultDocumentSymbolProvider` | 4.1.3 | `getSymbol`, `getChildSymbols`, `createSymbol` all `protected` — confirmed in local source. No changes across 4.x minor versions. |
-| Langium `ValidationOptions.stopAfterParsingErrors` | 4.1.3 | Confirmed in local source `document-validator.ts` line 33. Available since Langium 3.x. |
-| Langium `ValidationCategory` `'slow'` | 4.1.3 | Built-in category, confirmed in `validation-registry.ts`. Default build excludes `'slow'`. |
-| `vscode-uri` | 3.1.0 (existing) | `URI.parse().fsPath` returns platform-correct absolute path. Stable API. |
+| Package | Compatible With | Notes |
+|---------|-----------------|-------|
+| langium@4.1.3 | chevrotain@11.0.3 | Langium 4.1.x ships this exact Chevrotain version as peer dep |
+| vscode-languageserver@9.0.1 | vscode-languageserver-types@3.17.5 | Transitive dep; CompletionItemTag.Deprecated is at 3.17.x |
+| java-interop MethodInfo (new `isStatic` field) | vscode-jsonrpc@8.2.1 | JSON-RPC serialization handles new fields transparently; old clients ignore unknown fields |
+| java-interop MethodInfo (new `deprecated` field) | existing java-interop connection protocol | Additive field — backward compatible with older java-interop instances that omit it |
+| `CompletionItemTag` import | vscode-languageserver@9.0.1 | Already available via `vscode-languageserver` — same import path as `CompletionItemKind` |
+
+## Integration Workflow Summary
+
+### Grammar change (every grammar feature)
+1. Edit `bbj.langium` (or `java-types.langium` for type schema)
+2. Run `npx langium generate` — regenerates `src/language/generated/ast.ts`
+3. Fix TypeScript compilation errors in dependent service files
+4. Add/update Vitest tests in `test/parser.test.ts`
+5. Run `node ./esbuild.mjs` to rebuild the LS bundle
+
+### java-interop change (static methods, deprecated)
+1. Edit `MethodInfo.java` (add field)
+2. Edit `InteropService.java` (populate field via reflection)
+3. Edit `java-types.langium` (add field to `JavaMethod` interface)
+4. Run `npx langium generate` (regenerates AST types)
+5. Update `java-interop.ts` to read and propagate new field from JSON response
+6. Update `bbj-completion-provider.ts` to use new field
+7. Build java-interop JAR and rebuild LS bundle
+
+### Completion provider change (no java-interop needed)
+- `.class` property and constructor completion: modify only `bbj-type-inferer.ts` and `bbj-completion-provider.ts`
+- No grammar changes required for these two features
 
 ## Sources
 
-- Local inspection: `/bbj-vscode/node_modules/langium/src/lsp/document-symbol-provider.ts` — Confirmed `getSymbol`, `getChildSymbols`, `createSymbol` are `protected`; `$cstNode` null check risk identified. HIGH confidence.
-- Local inspection: `/bbj-vscode/node_modules/langium/src/validation/document-validator.ts` — Confirmed `ValidationOptions.stopAfterParsingErrors` at line 33, `DocumentValidator.ParsingError` constant at line 353. HIGH confidence.
-- Local inspection: `/bbj-vscode/node_modules/langium/src/workspace/document-builder.ts` — Confirmed `updateBuildOptions` defaults to `['built-in', 'fast']` at line 145; `ValidationCategory` usage. HIGH confidence.
-- Local inspection: `/bbj-vscode/node_modules/langium/src/validation/validation-registry.ts` — Confirmed `register()` accepts category param defaulting to `'fast'`; `'slow'` is pre-defined. HIGH confidence.
-- Local inspection: `bbj-vscode/src/language/bbj-module.ts` — Confirmed DI registration pattern for `lsp.DocumentSymbolProvider`, `lsp.DefinitionProvider`, etc. HIGH confidence.
-- Local inspection: `bbj-vscode/src/language/bbj-document-validator.ts` — Existing `BBjDocumentValidator` already overrides `processLinkingErrors` and `toDiagnostic`. HIGH confidence.
-- [Node.js v20.18.1 child_process docs](https://nodejs.org/api/child_process.html) — `spawn()` API, `shell` option for Windows `.bat`. HIGH confidence.
-- [BASIS BBjCPL documentation](https://documentation.basis.com/BASISHelp/WebHelp/util/bbjcpl_bbj_compiler.htm) — Error message format: "All error messages contain both the BBj line number and the ASCII file line number." MEDIUM confidence (exact delimiter format not specified; needs empirical validation).
-- [Chevrotain fault tolerance docs](https://chevrotain.io/docs/tutorial/step4_fault_tolerance.html) — Error recovery creates nodes without valid CST positions (NaN offsets). HIGH confidence for the null-guard rationale.
-- [GitHub: cross-spawn](https://github.com/moxystudio/node-cross-spawn) — Windows `.bat` spawn issue analysis. Confirmed `shell: true` is the correct built-in fix. MEDIUM confidence.
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj.langium` — grammar rules, ExitWithNumberStatement, SERIAL status, ClassMember definition (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/bbj-token-builder.ts` — LONGER_ALT pattern and RELEASE token regexes (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/java-interop/src/main/java/bbj/interop/data/MethodInfo.java` — current MethodInfo fields (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/java-interop/src/main/java/bbj/interop/InteropService.java` — `java.lang.reflect.Modifier` already imported, `m.getModifiers()` pattern available (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/bbj-vscode/node_modules/vscode-languageserver-types/lib/esm/main.js` line 1144 — `CompletionItemTag.Deprecated = 1` confirmed present (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/Commands/Commands.cjs` — EM config "--" root cause confirmed at line 97 (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/bbj-vscode/package.json` — missing bbx grammar registration confirmed (HIGH confidence)
+- `/Users/beff/_workspace/bbj-language-server/bbj-vscode/VERBs.md` — SERIAL confirmed TODO, ADDR confirmed OK (HIGH confidence)
+- Direct inspection of `/Users/beff/_workspace/bbj-language-server/bbj-vscode/src/language/java-types.langium` — current JavaMethod interface (no deprecated, no isStatic) (HIGH confidence)
 
 ---
-
-*Stack research for: BBj Language Server — BBjCPL Integration, Diagnostic Cascading, Outline Resilience*
-*Researched: 2026-02-19*
+*Stack research for: BBj language server v3.9 — grammar additions, bug fixes, completion enhancements*
+*Researched: 2026-02-20*

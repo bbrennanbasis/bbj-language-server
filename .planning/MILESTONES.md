@@ -439,3 +439,43 @@
 
 ---
 
+
+## v3.9 Quick Wins (Shipped: 2026-02-21)
+
+**Delivered:** Fixed four reported regressions, added three missing grammar verbs (EXIT, SERIAL, ADDR), and implemented four Java class reference features (.class resolution, static method completion, deprecated strikethrough, constructor completion) — enriching code intelligence for Java interop workflows.
+
+**Phases completed:** 57-59 (8 plans total)
+
+**Key accomplishments:**
+
+- Stripped EM Config "--" sentinel from classpath across all 6 run command paths (VS Code + IntelliJ DWC/BUI/GUI)
+- Excluded config.bbx and config.min from BBj syntax highlighting via VS Code configurationDefaults
+- Fixed RELEASE token LONGER_ALT for keyword-prefixed suffixed identifiers (`releaseVersion!`, `stepMode!`)
+- Added DECLARE-in-class-body grammar recovery with validator diagnostic instead of parser crash
+- Added EXIT_NO_NL custom terminal for EXIT with optional numeric argument (restrictive lookahead avoids flow-control ambiguity)
+- Added SerialStatement grammar rule and broadened ADDR fileid from StringLiteral to Expression
+- Enriched Java backend with isStatic, isDeprecated, and constructor extraction via reflection
+- Implemented .class type resolution returning java.lang.Class with synthetic scope injection
+- Static method completion on USE class references via isClassRef detection and isStatic filtering
+- Deprecated strikethrough via CompletionItemTag.Deprecated for methods, fields, and classes
+- Constructor completion for `new ClassName(` with `(` trigger character and snippet insertText
+
+**Stats:**
+
+- 21 files modified (+1,494 / -29 lines)
+- 3 phases, 8 plans
+- 1 day (2026-02-20 → 2026-02-21)
+- Milestone audit: 11/11 requirements, 3/3 phases, 16/16 integrations, 11/12 E2E flows
+- Test suite: 511 passed, 4 skipped, 0 failures
+
+**Git range:** `576b61b` → `2194616`
+
+**Tech debt accepted:**
+- IntelliJ TextMate bundle cannot exclude config.bbx by filename (platform limitation)
+- FQN path static-only filtering deferred (USE alias path works; requires JAR redeployment)
+- Static method return type inference gap (future work)
+
+**What's next:** All v3.9 targets met. Ready for next milestone.
+
+---
+

@@ -150,24 +150,21 @@ BBj developers get consistent, high-quality language intelligence — syntax hig
 - ✓ Javadoc-enriched completion items with method.docu population at class resolution — v3.8
 - ✓ Java connection error notification via window/showMessage — v3.8
 
+- ✓ EM Config "--" sentinel stripped from classpath in all run commands (#382) — v3.9
+- ✓ config.bbx and config.min excluded from BBj syntax highlighting in VS Code (#381) — v3.9
+- ✓ RELEASE-prefixed suffixed identifiers (`releaseVersion!`, `stepMode!`) parse without error (#379) — v3.9
+- ✓ DECLARE in class body produces validation error instead of parser crash (#380) — v3.9
+- ✓ EXIT verb accepts optional integer parameter (#376) — v3.9
+- ✓ SERIAL verb recognized by parser (#375) — v3.9
+- ✓ ADDR verb accepts any expression as fileid (#377) — v3.9
+- ✓ `.class` property on class references resolves to java.lang.Class (#373) — v3.9
+- ✓ Static method completion on class references via USE statements (#374) — v3.9
+- ✓ Deprecated methods show strikethrough indicator in completion items — v3.9
+- ✓ Constructor completion for `new ClassName()` expressions — v3.9
+
 ### Active
 
-## Current Milestone: v3.9 Quick Wins
-
-**Goal:** Fix reported bugs, add missing grammar verbs, and close quick feature gaps (static methods, constructors, deprecated indicators).
-
-**Target features:**
-- Fix EM Config "--" causing DWC/BUI startup failure (#382)
-- Fix config.bbx file no longer highlighted (#381)
-- Fix `releaseVersion!` variable flagged as parse error (#379)
-- Fix DECLARE in class outside methods breaking parser (#380)
-- Add EXIT verb optional int parameter (#376)
-- Add SERIAL verb (#375)
-- Add ADDR function (#377)
-- Add `.class` property resolution (#373)
-- Static method completion on class references via USE (#374)
-- Deprecated method visual indicator in completion items
-- Constructor completion for `new ClassName()`
+(No active milestone — use `/gsd:new-milestone` to start next)
 
 ### Out of Scope
 
@@ -181,7 +178,7 @@ BBj developers get consistent, high-quality language intelligence — syntax hig
 
 ## Context
 
-**Current state:** v3.9 started 2026-02-20 (15 milestones shipped, 56 phases). Test suite fully green (501 passed, 4 skipped). All production FIXMEs and actionable TODOs resolved.
+**Current state:** v3.9 shipped 2026-02-21 (16 milestones shipped, 59 phases). Test suite fully green (511 passed, 4 skipped). Java class reference features (static methods, deprecated indicators, constructors, .class resolution) complete.
 
 **Tech stack:** Java 17, Gradle (Kotlin DSL), IntelliJ Platform SDK 2024.2+, LSP4IJ 0.19.0, TextMate grammar, Node.js v20.18.1 LTS (auto-downloaded), Langium 4.1.3, Chevrotain 11.0.3, Vitest 1.6.1 with V8 coverage.
 
@@ -199,7 +196,9 @@ BBj developers get consistent, high-quality language intelligence — syntax hig
 - CPL-06 hierarchy suppression takes one extra build cycle after BBjCPL merge (timing nuance, end state correct)
 - TEST-03 (DEF FN completion inside class methods) skipped — Langium grammar follower limitation
 - 3 parser.test.ts assertions DISABLED — require Java classpath unavailable in EmptyFileSystem test environment
-- 4 architectural TODOs (ARCH-01 through ARCH-04) and 2 feature TODOs (FEAT-01, FEAT-02) tracked in future requirements
+- IntelliJ TextMate bundle cannot exclude config.bbx by filename (platform limitation)
+- FQN path static-only filtering deferred — USE alias path works; MemberCall isClassRef requires JAR redeployment
+- Static method return type inference gap — String.valueOf(2) does not assign type to target variable
 
 ## Constraints
 
@@ -312,5 +311,16 @@ BBj developers get consistent, high-quality language intelligence — syntax hig
 | Lazy BBjCPL availability via fs.accessSync | Direct binary check on first trigger; compile() returns [] for both clean file and ENOENT | ✓ Good — v3.7 shipped |
 | Status bar over notification balloons for BBjCPL | Non-intrusive "BBjCPL: unavailable" in status bar; no popup dialogs | ✓ Good — v3.7 shipped |
 
+| stripSentinel helper for EM Config "--" | Silently convert sentinel to empty string in all classpath paths | ✓ Good — v3.9 shipped |
+| VS Code configurationDefaults for file exclusion | Filename-level language association override without modifying extension array | ✓ Good — v3.9 shipped |
+| EXIT_NO_NL restrictive lookahead [0-9(+\-] | Avoids matching flow-control keywords (else, return) in inline-if contexts | ✓ Good — v3.9 shipped |
+| SerialStatement optional pair (records, recsize) | Both must appear together per BBj syntax; Mode? and Err? independent | ✓ Good — v3.9 shipped |
+| Two-phase resolveClass for isStatic/deprecated | Synchronously set metadata before registering in resolvedClasses; eliminates race | ✓ Good — v3.9 shipped |
+| isClassRef via SymbolRef.symbol.ref → isJavaClass | Detects USE class references for static-only completion filtering | ✓ Good — v3.9 shipped |
+| StreamScopeWithPredicate for .class injection | createScopeForNodes only accepts AstNode; wrapper pattern for AstNodeDescription | ✓ Good — v3.9 shipped |
+| CompletionItemTag.Deprecated only (no sort change) | Strikethrough indicator without demoting deprecated items in completion order | ✓ Good — v3.9 shipped |
+| ( trigger returns empty CompletionList | Prevents slow fallthrough to default completion when constructor completion unavailable | ✓ Good — v3.9 shipped |
+| DTO isDeprecated → Langium deprecated field mapping | Java naming convention differs from Langium property name; explicit mapping in java-interop.ts | ✓ Good — v3.9 shipped |
+
 ---
-*Last updated: 2026-02-20 after v3.9 milestone start*
+*Last updated: 2026-02-21 after v3.9 milestone*
